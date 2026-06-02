@@ -1,5 +1,26 @@
 const STORAGE_KEY = "stock-trading-client-state";
 const SESSION_LIMIT_MS = 30 * 60 * 1000;
+const API_CONFIG = {
+  accountBaseUrl: localStorage.getItem("accountApiBase") || localStorage.getItem("fundAccountApiBase") || "",
+  managementBaseUrl: localStorage.getItem("managementApiBase") || "",
+  centralBaseUrl: localStorage.getItem("centralTradingApiBase") || "",
+  endpoints: {
+    login: "/api/fund-accounts/login",
+    fundAccount: "/api/fund-accounts/{accountNo}",
+    holdings: "/api/security-accounts/{accountNo}/holdings",
+    changePassword: "/api/fund-accounts/{accountNo}/password",
+    freezeFunds: "/api/fund-accounts/{accountNo}/freeze",
+    releaseFunds: "/api/fund-accounts/{accountNo}/release",
+    freezeHolding: "/api/security-accounts/{accountNo}/holdings/freeze",
+    releaseHolding: "/api/security-accounts/{accountNo}/holdings/release",
+    reviewOrder: "/api/trade-management/orders/review",
+    quotes: "/api/central-trading/stocks",
+    submitOrder: "/api/central-trading/orders",
+    cancelOrder: "/api/central-trading/orders/{orderId}/cancel",
+    orderResult: "/api/central-trading/orders/{orderId}/result",
+  },
+  timeoutMs: 5000,
+};
 
 const seedState = {
   currentAccount: null,
@@ -138,6 +159,36 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
+function buildApiUrl(baseUrl, endpoint, params = {}) {
+  const path = endpoint.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key] ?? ""));
+  return `${baseUrl}${path}`;
+}
+
+async function requestJson(baseUrl, endpoint, { params = {}, method = "GET", body } = {}) {
+  if (!baseUrl) return { ok: false, mock: true, message: "接口地址未配置" };
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeoutMs);
+  try {
+    const response = await fetch(buildApiUrl(baseUrl, endpoint, params), {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { ok: false, message: data.message || `接口请求失败：${response.status}` };
+    return { ok: true, data };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error.name === "AbortError" ? "接口请求超时，请稍后重试" : "接口连接失败，请检查服务地址",
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function money(value) {
   return `¥${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -184,9 +235,76 @@ function validateSession() {
   return true;
 }
 
-function login(accountNo, password) {
+async function login(accountNo, password) {
   if (!/^\d{16}$/.test(accountNo)) return { ok: false, message: "卡号格式错误，请输入16位数字" };
   if (!/^\d{6}$/.test(password)) return { ok: false, message: "密码格式错误，请输入6位数字" };
+  const authResult = await verifyFundAccount(accountNo, password);
+  if (!authResult.ok) return authResult;
+
+  const account = ensureLocalAccount(authResult.account);
+  if (account.status === "锁定") return { ok: false, message: "账户已锁定，请联系客服" };
+  if (account.status !== "正常") return { ok: false, message: `账户状态异常：${account.status}` };
+  if (!authResult.account.securityAccountLinked) return { ok: false, message: "证券账户未关联" };
+
+  account.failedAttempts = 0;
+  const firstLogin = !account.firstLoginDone;
+  account.firstLoginDone = true;
+  state.currentAccount = accountNo;
+  state.session = { accountNo, token: authResult.token || crypto.randomUUID(), lastActiveAt: Date.now() };
+  saveState();
+  return { ok: true, message: firstLogin ? "首次登录证书认证通过" : "登录成功" };
+}
+
+async function verifyFundAccount(accountNo, password) {
+  if (!API_CONFIG.accountBaseUrl) return verifyFundAccountMock(accountNo, password);
+
+  const result = await requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.login, {
+    method: "POST",
+    body: { fundAccountNo: accountNo, tradePassword: password },
+  });
+  if (!result.ok) return { ok: false, message: result.message || "资金账户系统拒绝登录请求" };
+  return normalizeFundAccountLogin(result.data, accountNo);
+}
+
+function normalizeFundAccountLogin(data, accountNo) {
+  if (data.success === false || data.ok === false || data.code === "FAIL") {
+    return { ok: false, message: data.message || "登录失败" };
+  }
+  const payload = data.data || data.account || data;
+  const account = {
+    accountNo: payload.fundAccountNo || payload.accountNo || accountNo,
+    name: payload.investorName || payload.name || "投资者",
+    status: payload.accountStatus || payload.status || "正常",
+    availableCash: Number(payload.availableCash ?? payload.availableBalance ?? 0),
+    frozenCash: Number(payload.frozenCash ?? payload.frozenBalance ?? 0),
+    firstLoginDone: Boolean(payload.firstLoginDone ?? payload.certificated ?? true),
+    securityAccountLinked: payload.securityAccountLinked !== false,
+  };
+  return { ok: true, account, token: payload.token || data.token };
+}
+
+function ensureLocalAccount(remoteAccount) {
+  const existing = state.accounts[remoteAccount.accountNo];
+  const fallback = existing || {
+    accountNo: remoteAccount.accountNo,
+    tradePassword: "",
+    withdrawPassword: "",
+    failedAttempts: 0,
+    holdings: [],
+  };
+  state.accounts[remoteAccount.accountNo] = {
+    ...fallback,
+    name: remoteAccount.name,
+    status: remoteAccount.status,
+    availableCash: remoteAccount.availableCash,
+    frozenCash: remoteAccount.frozenCash,
+    firstLoginDone: Boolean(fallback.firstLoginDone || remoteAccount.firstLoginDone),
+    securityAccountLinked: remoteAccount.securityAccountLinked,
+  };
+  return state.accounts[remoteAccount.accountNo];
+}
+
+function verifyFundAccountMock(accountNo, password) {
   const account = state.accounts[accountNo];
   if (!account) return { ok: false, message: "账户不存在或证券账户未关联" };
   if (account.status === "锁定") return { ok: false, message: "账户已锁定，请联系客服" };
@@ -196,13 +314,210 @@ function login(accountNo, password) {
     saveState();
     return { ok: false, message: account.status === "锁定" ? "账户已锁定，请联系客服" : "密码错误，请重新输入" };
   }
-  account.failedAttempts = 0;
-  const firstLogin = !account.firstLoginDone;
-  account.firstLoginDone = true;
-  state.currentAccount = accountNo;
-  state.session = { accountNo, token: crypto.randomUUID(), lastActiveAt: Date.now() };
-  saveState();
-  return { ok: true, message: firstLogin ? "首次登录证书认证通过" : "登录成功" };
+  return {
+    ok: true,
+    account: {
+      accountNo: account.accountNo,
+      name: account.name,
+      status: account.status,
+      availableCash: account.availableCash,
+      frozenCash: account.frozenCash,
+      firstLoginDone: account.firstLoginDone,
+      securityAccountLinked: account.securityAccountLinked !== false,
+    },
+    token: crypto.randomUUID(),
+  };
+}
+
+async function fetchFundAccount(accountNo) {
+  if (!API_CONFIG.accountBaseUrl) {
+    const account = state.accounts[accountNo];
+    return {
+      ok: true,
+      account: {
+        accountNo,
+        availableCash: account.availableCash,
+        frozenCash: account.frozenCash,
+        status: account.status,
+      },
+    };
+  }
+
+  const result = await requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.fundAccount, { params: { accountNo } });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.account || result.data;
+  return {
+    ok: true,
+    account: {
+      accountNo,
+      availableCash: Number(payload.availableCash ?? payload.availableBalance ?? 0),
+      frozenCash: Number(payload.frozenCash ?? payload.frozenBalance ?? 0),
+      status: payload.accountStatus || payload.status || "正常",
+    },
+  };
+}
+
+async function fetchSecurityHoldings(accountNo) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true, holdings: state.accounts[accountNo].holdings };
+
+  const result = await requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.holdings, { params: { accountNo } });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.holdings || result.data;
+  const rows = Array.isArray(payload) ? payload : [];
+  return {
+    ok: true,
+    holdings: rows.map((item) => ({
+      stockCode: item.stockCode,
+      quantity: Number(item.quantity ?? item.holdingQuantity ?? 0),
+      sellable: Number(item.sellable ?? item.sellableQuantity ?? item.availableQuantity ?? 0),
+      cost: Number(item.cost ?? item.costPrice ?? 0),
+    })),
+  };
+}
+
+async function changePasswordViaAccountSystem(accountNo, type, oldPassword, newPassword) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  return requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.changePassword, {
+    params: { accountNo },
+    method: "POST",
+    body: { passwordType: type, oldPassword, newPassword },
+  });
+}
+
+async function freezeFunds(accountNo, amount, orderRef) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  return requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.freezeFunds, {
+    params: { accountNo },
+    method: "POST",
+    body: { amount, orderRef },
+  });
+}
+
+async function releaseFunds(accountNo, amount, orderRef) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  return requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.releaseFunds, {
+    params: { accountNo },
+    method: "POST",
+    body: { amount, orderRef },
+  });
+}
+
+async function freezeHolding(accountNo, stockCode, quantity, orderRef) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  return requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.freezeHolding, {
+    params: { accountNo },
+    method: "POST",
+    body: { stockCode, quantity, orderRef },
+  });
+}
+
+async function releaseHolding(accountNo, stockCode, quantity, orderRef) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  return requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.releaseHolding, {
+    params: { accountNo },
+    method: "POST",
+    body: { stockCode, quantity, orderRef },
+  });
+}
+
+async function reviewOrderByManagement(orderPayload) {
+  if (!API_CONFIG.managementBaseUrl) return { ok: true, approved: true };
+  const result = await requestJson(API_CONFIG.managementBaseUrl, API_CONFIG.endpoints.reviewOrder, {
+    method: "POST",
+    body: orderPayload,
+  });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data;
+  return {
+    ok: payload.approved !== false && result.data.success !== false,
+    approved: payload.approved !== false,
+    message: payload.message || result.data.message || "交易管理系统审查未通过",
+  };
+}
+
+async function fetchQuotes(keyword = "") {
+  if (!API_CONFIG.centralBaseUrl) {
+    const result = searchStocks(keyword || "");
+    if (result.error) return { ok: false, message: result.error };
+    return { ok: true, stocks: result.stocks };
+  }
+
+  const query = keyword ? `?keyword=${encodeURIComponent(keyword)}` : "";
+  const result = await requestJson(API_CONFIG.centralBaseUrl, `${API_CONFIG.endpoints.quotes}${query}`);
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.stocks || result.data;
+  const stocks = (Array.isArray(payload) ? payload : []).map(normalizeStockQuote);
+  return { ok: true, stocks };
+}
+
+function normalizeStockQuote(item) {
+  return {
+    stockCode: item.stockCode,
+    name: item.name || item.stockName,
+    latest: Number(item.latest ?? item.latestPrice ?? item.currentPrice ?? 0),
+    prevClose: Number(item.prevClose ?? item.previousClose ?? item.latest ?? item.currentPrice ?? 0),
+    high: Number(item.high ?? item.highestPrice ?? item.latest ?? item.currentPrice ?? 0),
+    low: Number(item.low ?? item.lowestPrice ?? item.latest ?? item.currentPrice ?? 0),
+    buyOne: Number(item.buyOne ?? item.bidPrice ?? item.latest ?? item.currentPrice ?? 0),
+    sellOne: Number(item.sellOne ?? item.askPrice ?? item.latest ?? item.currentPrice ?? 0),
+    status: item.status || item.tradeStatus || "可交易",
+    announcement: item.announcement || item.notice || "",
+  };
+}
+
+function normalizeOrderStatus(status) {
+  const statusMap = {
+    SUBMITTED: "未成交",
+    ACCEPTED: "未成交",
+    UNTRADED: "未成交",
+    PART_TRADED: "部分成交",
+    PARTIAL_FILLED: "部分成交",
+    TRADED: "已成交",
+    FILLED: "已成交",
+    CANCELED: "已撤销",
+    CANCELLED: "已撤销",
+    REJECTED: "已拒绝",
+  };
+  return statusMap[status] || status || "未成交";
+}
+
+async function submitOrderToCentral(orderPayload) {
+  if (!API_CONFIG.centralBaseUrl) return { ok: true, orderNo: `O${Date.now()}`, status: "未成交" };
+  const result = await requestJson(API_CONFIG.centralBaseUrl, API_CONFIG.endpoints.submitOrder, {
+    method: "POST",
+    body: orderPayload,
+  });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.order || result.data;
+  if (result.data.success === false || payload.accepted === false) {
+    return { ok: false, message: result.data.message || payload.message || "中央交易系统拒绝委托" };
+  }
+  return {
+    ok: true,
+    orderNo: payload.orderNo || payload.orderId || `O${Date.now()}`,
+    status: normalizeOrderStatus(payload.status),
+  };
+}
+
+async function cancelOrderInCentral(orderId) {
+  if (!API_CONFIG.centralBaseUrl) return { ok: true };
+  const result = await requestJson(API_CONFIG.centralBaseUrl, API_CONFIG.endpoints.cancelOrder, {
+    params: { orderId },
+    method: "POST",
+  });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data;
+  if (result.data.success === false || payload.canceled === false) {
+    return { ok: false, message: result.data.message || payload.message || "中央交易系统拒绝撤销" };
+  }
+  return { ok: true };
+}
+
+async function fetchOrderResultFromCentral(orderId) {
+  if (!API_CONFIG.centralBaseUrl) return { ok: false, mock: true };
+  const result = await requestJson(API_CONFIG.centralBaseUrl, API_CONFIG.endpoints.orderResult, { params: { orderId } });
+  if (!result.ok) return result;
+  return { ok: true, result: result.data.data || result.data };
 }
 
 function logout(message = "") {
@@ -330,27 +645,109 @@ function validateOrderInput(form, side) {
   return { stock, stockCode, orderPrice, quantity };
 }
 
-function submitOrder(form, side) {
+async function refreshExternalData({ randomizeMockQuotes = false } = {}) {
+  const account = currentAccount();
+  if (!account) return;
+
+  const fundResult = await fetchFundAccount(account.accountNo);
+  if (fundResult.ok) {
+    account.availableCash = fundResult.account.availableCash;
+    account.frozenCash = fundResult.account.frozenCash;
+    account.status = fundResult.account.status;
+  } else {
+    toast(fundResult.message || "资金账户信息刷新失败");
+  }
+
+  const holdingResult = await fetchSecurityHoldings(account.accountNo);
+  if (holdingResult.ok) account.holdings = holdingResult.holdings;
+
+  if (API_CONFIG.centralBaseUrl) {
+    const quoteResult = await fetchQuotes();
+    if (quoteResult.ok) {
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
+    } else {
+      toast(quoteResult.message || "中央交易系统行情刷新失败");
+    }
+  } else if (randomizeMockQuotes) {
+    Object.values(state.stocks).forEach((stock) => {
+      const drift = stock.latest * (Math.random() * 0.012 - 0.006);
+      stock.latest = Number(Math.max(0.01, stock.latest + drift).toFixed(2));
+      stock.buyOne = Number((stock.latest - 0.01).toFixed(2));
+      stock.sellOne = Number((stock.latest + 0.01).toFixed(2));
+      stock.high = Math.max(stock.high, stock.latest);
+      stock.low = Math.min(stock.low, stock.latest);
+    });
+  }
+
+  checkAlerts();
+  saveState();
+  renderAll();
+}
+
+async function submitOrder(form, side) {
   if (!validateSession()) return;
   const message = form.querySelector(".form-message");
   const account = currentAccount();
+  const pendingStockCode = form.stockCode.value.trim();
+  if (API_CONFIG.centralBaseUrl && /^\d{6}$/.test(pendingStockCode)) {
+    const quoteResult = await fetchQuotes(pendingStockCode);
+    if (quoteResult.ok) {
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
+    }
+  }
   const input = validateOrderInput(form, side);
   if (input.error) return setMessage(message, input.error, "error");
+
+  const orderDraft = {
+    fundAccountNo: account.accountNo,
+    stockCode: input.stockCode,
+    direction: side === "buy" ? "BUY" : "SELL",
+    price: input.orderPrice,
+    quantity: input.quantity,
+  };
+
+  const review = await reviewOrderByManagement(orderDraft);
+  if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
 
   if (side === "buy") {
     const amount = input.orderPrice * input.quantity;
     if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
+    const freezeResult = await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
+    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
     account.availableCash -= amount;
     account.frozenCash += amount;
   } else {
     const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
     if (!holding) return setMessage(message, "您未持有该股票", "error");
     if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
+    const freezeResult = await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
+    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
     holding.sellable -= input.quantity;
   }
 
+  const centralResult = await submitOrderToCentral(orderDraft);
+  if (!centralResult.ok) {
+    if (side === "buy") {
+      const amount = input.orderPrice * input.quantity;
+      account.availableCash += amount;
+      account.frozenCash -= amount;
+      await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+    } else {
+      const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+      if (holding) holding.sellable += input.quantity;
+      await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
+    }
+    saveState();
+    renderAll();
+    return setMessage(message, centralResult.message || "中央交易系统拒绝委托，冻结资源已释放", "error");
+  }
+
   const order = {
-    id: `O${Date.now()}`,
+    id: centralResult.orderNo,
     stockCode: input.stockCode,
     stockName: input.stock.name,
     side,
@@ -358,7 +755,7 @@ function submitOrder(form, side) {
     quantity: input.quantity,
     tradedQuantity: 0,
     remainingQuantity: input.quantity,
-    status: "未成交",
+    status: centralResult.status || "未成交",
     submitTime: nowText(),
   };
   state.orders.unshift(order);
@@ -369,7 +766,7 @@ function submitOrder(form, side) {
   renderAll();
 }
 
-function cancelOrder(orderId) {
+async function cancelOrder(orderId) {
   if (!validateSession()) return;
   const order = state.orders.find((item) => item.id === orderId);
   if (!order || !["未成交", "部分成交"].includes(order.status)) {
@@ -377,11 +774,18 @@ function cancelOrder(orderId) {
     return;
   }
   const account = currentAccount();
+  const centralResult = await cancelOrderInCentral(orderId);
+  if (!centralResult.ok) {
+    toast(centralResult.message || "中央交易系统撤销失败");
+    return;
+  }
   if (order.side === "buy") {
     const release = order.remainingQuantity * order.price;
+    await releaseFunds(account.accountNo, release, order.id);
     account.frozenCash -= release;
     account.availableCash += release;
   } else {
+    await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, order.id);
     const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
     if (holding) holding.sellable += order.remainingQuantity;
   }
@@ -392,8 +796,17 @@ function cancelOrder(orderId) {
   renderAll();
 }
 
-function simulateTrade(orderId) {
+async function simulateTrade(orderId) {
   if (!validateSession()) return;
+  if (API_CONFIG.centralBaseUrl) {
+    const result = await fetchOrderResultFromCentral(orderId);
+    if (!result.ok) {
+      toast(result.message || "中央交易系统暂无成交回报");
+      return;
+    }
+    applyCentralTradeResult(orderId, result.result);
+    return;
+  }
   const order = state.orders.find((item) => item.id === orderId);
   if (!order || order.status !== "未成交") return;
   const account = currentAccount();
@@ -435,6 +848,50 @@ function simulateTrade(orderId) {
   renderAll();
 }
 
+function applyCentralTradeResult(orderId, result) {
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order) return;
+  const account = currentAccount();
+  const tradedQuantity = Number(result.tradedQuantity ?? result.quantity ?? order.quantity);
+  const tradePrice = Number(result.tradePrice ?? result.price ?? order.price);
+  const amount = tradedQuantity * tradePrice;
+  order.tradedQuantity = tradedQuantity;
+  order.remainingQuantity = Math.max(0, order.quantity - tradedQuantity);
+  order.status = result.status ? normalizeOrderStatus(result.status) : (order.remainingQuantity === 0 ? "已成交" : "部分成交");
+
+  if (order.side === "buy") {
+    account.frozenCash -= amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) {
+      const totalCost = holding.cost * holding.quantity + amount;
+      holding.quantity += tradedQuantity;
+      holding.sellable += tradedQuantity;
+      holding.cost = totalCost / holding.quantity;
+    } else {
+      account.holdings.push({ stockCode: order.stockCode, quantity: tradedQuantity, sellable: tradedQuantity, cost: tradePrice });
+    }
+  } else {
+    account.availableCash += amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) holding.quantity -= tradedQuantity;
+    account.holdings = account.holdings.filter((item) => item.quantity > 0);
+  }
+
+  state.trades.unshift({
+    id: result.tradeNo || result.tradeId || `T${Date.now()}`,
+    orderId: order.id,
+    stockCode: order.stockCode,
+    stockName: order.stockName,
+    price: tradePrice,
+    quantity: tradedQuantity,
+    amount,
+    time: result.tradeTime || nowText(),
+  });
+  saveState();
+  toast("中央交易系统成交回报已同步");
+  renderAll();
+}
+
 function renderOrders() {
   dom.orderRows.innerHTML = "";
   state.orders.forEach((order) => {
@@ -450,7 +907,7 @@ function renderOrders() {
       <td>${order.remainingQuantity}</td>
       <td>${order.status}</td>
       <td>
-        <button class="secondary-btn" data-fill="${order.id}" ${order.status !== "未成交" ? "disabled" : ""}>成交</button>
+        <button class="secondary-btn" data-fill="${order.id}" ${order.status !== "未成交" ? "disabled" : ""}>${API_CONFIG.centralBaseUrl ? "同步" : "成交"}</button>
         <button class="ghost-btn" data-cancel="${order.id}" ${canCancel ? "" : "disabled"}>撤销</button>
       </td>
     `;
@@ -540,7 +997,7 @@ function renderAlerts() {
   dom.alertSummary.textContent = `${state.alerts.length} 条规则`;
 }
 
-function changePassword(form) {
+async function changePassword(form) {
   if (!validateSession()) return;
   const account = currentAccount();
   const message = form.querySelector(".form-message");
@@ -553,6 +1010,8 @@ function changePassword(form) {
   if (!/^\d{6}$/.test(newPassword) || /^(\d)\1{5}$/.test(newPassword)) return setMessage(message, "密码格式不符合要求", "error");
   if (newPassword === oldPassword) return setMessage(message, "新密码不能与原密码相同", "error");
   if (newPassword !== confirmPassword) return setMessage(message, "两次输入的密码不一致，请重新输入", "error");
+  const result = await changePasswordViaAccountSystem(account.accountNo, type, oldPassword, newPassword);
+  if (!result.ok) return setMessage(message, result.message || "资金账户系统修改密码失败", "error");
   account[key] = newPassword;
   saveState();
   form.reset();
@@ -567,9 +1026,14 @@ function setView(viewId) {
   dom.viewTitle.textContent = active ? active.textContent : "账户资产";
 }
 
-dom.loginForm.addEventListener("submit", (event) => {
+dom.loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const result = login(dom.accountNo.value.trim(), dom.tradePassword.value.trim());
+  const submitButton = dom.loginForm.querySelector("button[type='submit']");
+  submitButton.disabled = true;
+  submitButton.textContent = "正在登录";
+  const result = await login(dom.accountNo.value.trim(), dom.tradePassword.value.trim());
+  submitButton.disabled = false;
+  submitButton.textContent = "登录";
   if (!result.ok) return setMessage(dom.loginMessage, result.message, "error");
   setMessage(dom.loginMessage, result.message, "ok");
   showTerminal();
@@ -579,47 +1043,42 @@ dom.logoutBtn.addEventListener("click", () => logout());
 
 dom.navItems.forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
 
-dom.refreshBtn.addEventListener("click", () => {
+dom.refreshBtn.addEventListener("click", async () => {
   if (!validateSession()) return;
-  Object.values(state.stocks).forEach((stock) => {
-    const drift = stock.latest * (Math.random() * 0.012 - 0.006);
-    stock.latest = Number(Math.max(0.01, stock.latest + drift).toFixed(2));
-    stock.buyOne = Number((stock.latest - 0.01).toFixed(2));
-    stock.sellOne = Number((stock.latest + 0.01).toFixed(2));
-    stock.high = Math.max(stock.high, stock.latest);
-    stock.low = Math.min(stock.low, stock.latest);
-  });
-  checkAlerts();
-  renderAll();
+  await refreshExternalData({ randomizeMockQuotes: true });
   toast("行情与账户数据已刷新");
 });
 
-dom.marketForm.addEventListener("submit", (event) => {
+dom.marketForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!validateSession()) return;
-  const result = searchStocks(dom.marketKeyword.value);
-  if (result.error) {
-    dom.marketResult.innerHTML = `<p class="form-message error">${result.error}</p>`;
+  const result = await fetchQuotes(dom.marketKeyword.value.trim());
+  if (!result.ok) {
+    dom.marketResult.innerHTML = `<p class="form-message error">${result.message}</p>`;
     return;
   }
+  result.stocks.forEach((stock) => {
+    state.stocks[stock.stockCode] = stock;
+  });
+  saveState();
   renderMarket(result.stocks);
 });
 
-dom.buyForm.addEventListener("submit", (event) => {
+dom.buyForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  submitOrder(dom.buyForm, "buy");
+  await submitOrder(dom.buyForm, "buy");
 });
 
-dom.sellForm.addEventListener("submit", (event) => {
+dom.sellForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  submitOrder(dom.sellForm, "sell");
+  await submitOrder(dom.sellForm, "sell");
 });
 
-dom.orderRows.addEventListener("click", (event) => {
+dom.orderRows.addEventListener("click", async (event) => {
   const cancelId = event.target.dataset.cancel;
   const fillId = event.target.dataset.fill;
-  if (cancelId) cancelOrder(cancelId);
-  if (fillId) simulateTrade(fillId);
+  if (cancelId) await cancelOrder(cancelId);
+  if (fillId) await simulateTrade(fillId);
 });
 
 dom.alertForm.addEventListener("submit", (event) => {
@@ -632,9 +1091,9 @@ dom.alertRows.addEventListener("click", (event) => {
   if (alertId) deleteAlert(alertId);
 });
 
-dom.passwordForm.addEventListener("submit", (event) => {
+dom.passwordForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  changePassword(dom.passwordForm);
+  await changePassword(dom.passwordForm);
 });
 
 setInterval(() => {

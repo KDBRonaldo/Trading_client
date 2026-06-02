@@ -13,19 +13,36 @@
           <div class="brand-block">
             <p class="eyebrow">Stock Trading System</p>
             <h1>交易客户端</h1>
-            <p>面向投资者的账户查询、行情检索、委托交易、撤单和价格提醒入口。</p>
+            <p>
+              面向投资者的账户查询、行情检索、委托交易、撤单和价格提醒入口。
+            </p>
           </div>
           <form id="loginForm" class="login-form" autocomplete="off">
             <label>
               <span>资金账户卡号</span>
-              <input id="accountNo" inputmode="numeric" maxlength="16" placeholder="请输入16位数字" />
+              <input
+                id="accountNo"
+                inputmode="numeric"
+                maxlength="16"
+                placeholder="请输入16位数字"
+              />
             </label>
             <label>
               <span>交易密码</span>
-              <input id="tradePassword" type="password" inputmode="numeric" maxlength="6" placeholder="请输入6位密码" />
+              <input
+                id="tradePassword"
+                type="password"
+                inputmode="numeric"
+                maxlength="6"
+                placeholder="请输入6位密码"
+              />
             </label>
             <button class="primary-btn" type="submit">登录</button>
-            <p class="hint">演示账户：<strong>6222026000000001</strong> / 密码：<strong>123456</strong></p>
+            <p class="hint">
+              演示账户：<strong>6222026000000001</strong> / 密码：<strong
+                >123456</strong
+              >
+            </p>
             <p id="loginMessage" class="form-message"></p>
           </form>
         </div>
@@ -41,7 +58,9 @@
             </div>
           </div>
           <nav class="nav-list" aria-label="主导航">
-            <button class="nav-item active" data-view="dashboard">账户资产</button>
+            <button class="nav-item active" data-view="dashboard">
+              账户资产
+            </button>
             <button class="nav-item" data-view="market">行情查询</button>
             <button class="nav-item" data-view="trade">委托交易</button>
             <button class="nav-item" data-view="orders">委托与成交</button>
@@ -115,7 +134,11 @@
                 <span>支持股票代码或名称模糊查询</span>
               </div>
               <form id="marketForm" class="inline-form">
-                <input id="marketKeyword" maxlength="20" placeholder="如 600519 或 平安" />
+                <input
+                  id="marketKeyword"
+                  maxlength="20"
+                  placeholder="如 600519 或 平安"
+                />
                 <button class="primary-btn" type="submit">查询</button>
               </form>
               <div id="marketResult" class="market-result"></div>
@@ -125,18 +148,62 @@
           <section id="trade" class="view">
             <div class="trade-grid">
               <form id="buyForm" class="panel trade-form">
-                <div class="panel-header"><h3>买入委托</h3><span>冻结资金后提交</span></div>
-                <label><span>股票代码</span><input name="stockCode" maxlength="6" inputmode="numeric" placeholder="6位代码" /></label>
-                <label><span>买入价格</span><input name="price" inputmode="decimal" placeholder="最多2位小数" /></label>
-                <label><span>买入数量</span><input name="quantity" inputmode="numeric" placeholder="100的整数倍" /></label>
+                <div class="panel-header">
+                  <h3>买入委托</h3>
+                  <span>冻结资金后提交</span>
+                </div>
+                <label
+                  ><span>股票代码</span
+                  ><input
+                    name="stockCode"
+                    maxlength="6"
+                    inputmode="numeric"
+                    placeholder="6位代码"
+                /></label>
+                <label
+                  ><span>买入价格</span
+                  ><input
+                    name="price"
+                    inputmode="decimal"
+                    placeholder="最多2位小数"
+                /></label>
+                <label
+                  ><span>买入数量</span
+                  ><input
+                    name="quantity"
+                    inputmode="numeric"
+                    placeholder="100的整数倍"
+                /></label>
                 <button class="primary-btn" type="submit">提交买入</button>
                 <p class="form-message"></p>
               </form>
               <form id="sellForm" class="panel trade-form">
-                <div class="panel-header"><h3>卖出委托</h3><span>冻结股票后提交</span></div>
-                <label><span>股票代码</span><input name="stockCode" maxlength="6" inputmode="numeric" placeholder="持仓股票代码" /></label>
-                <label><span>卖出价格</span><input name="price" inputmode="decimal" placeholder="最多2位小数" /></label>
-                <label><span>卖出数量</span><input name="quantity" inputmode="numeric" placeholder="100的整数倍" /></label>
+                <div class="panel-header">
+                  <h3>卖出委托</h3>
+                  <span>冻结股票后提交</span>
+                </div>
+                <label
+                  ><span>股票代码</span
+                  ><input
+                    name="stockCode"
+                    maxlength="6"
+                    inputmode="numeric"
+                    placeholder="持仓股票代码"
+                /></label>
+                <label
+                  ><span>卖出价格</span
+                  ><input
+                    name="price"
+                    inputmode="decimal"
+                    placeholder="最多2位小数"
+                /></label>
+                <label
+                  ><span>卖出数量</span
+                  ><input
+                    name="quantity"
+                    inputmode="numeric"
+                    placeholder="100的整数倍"
+                /></label>
                 <button class="danger-btn" type="submit">提交卖出</button>
                 <p class="form-message"></p>
               </form>
@@ -145,7 +212,10 @@
 
           <section id="orders" class="view">
             <div class="panel">
-              <div class="panel-header"><h3>当日委托</h3><span>未成交或部分成交可撤销</span></div>
+              <div class="panel-header">
+                <h3>当日委托</h3>
+                <span>未成交或部分成交可撤销</span>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -166,7 +236,10 @@
               </div>
             </div>
             <div class="panel">
-              <div class="panel-header"><h3>成交结果</h3><span>成交后同步刷新资金和持仓</span></div>
+              <div class="panel-header">
+                <h3>成交结果</h3>
+                <span>成交后同步刷新资金和持仓</span>
+              </div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -188,8 +261,16 @@
 
           <section id="alerts" class="view">
             <form id="alertForm" class="panel alert-form">
-              <div class="panel-header"><h3>价格提醒</h3><span>行情满足条件时触发通知</span></div>
-              <input name="stockCode" maxlength="6" inputmode="numeric" placeholder="股票代码" />
+              <div class="panel-header">
+                <h3>价格提醒</h3>
+                <span>行情满足条件时触发通知</span>
+              </div>
+              <input
+                name="stockCode"
+                maxlength="6"
+                inputmode="numeric"
+                placeholder="股票代码"
+              />
               <select name="direction">
                 <option value="ABOVE">高于或等于</option>
                 <option value="BELOW">低于或等于</option>
@@ -199,18 +280,51 @@
               <p class="form-message"></p>
             </form>
             <div class="panel">
-              <div class="panel-header"><h3>提醒列表</h3><span id="alertSummary"></span></div>
+              <div class="panel-header">
+                <h3>提醒列表</h3>
+                <span id="alertSummary"></span>
+              </div>
               <div id="alertRows" class="alert-list"></div>
             </div>
           </section>
 
           <section id="security" class="view">
             <form id="passwordForm" class="panel password-form">
-              <div class="panel-header"><h3>修改密码</h3><span>支持交易密码和取款密码</span></div>
-              <label><span>密码类型</span><select name="type"><option value="trade">交易密码</option><option value="withdraw">取款密码</option></select></label>
-              <label><span>原密码</span><input name="oldPassword" type="password" maxlength="6" inputmode="numeric" /></label>
-              <label><span>新密码</span><input name="newPassword" type="password" maxlength="6" inputmode="numeric" /></label>
-              <label><span>确认新密码</span><input name="confirmPassword" type="password" maxlength="6" inputmode="numeric" /></label>
+              <div class="panel-header">
+                <h3>修改密码</h3>
+                <span>支持交易密码和取款密码</span>
+              </div>
+              <label
+                ><span>密码类型</span
+                ><select name="type">
+                  <option value="trade">交易密码</option>
+                  <option value="withdraw">取款密码</option>
+                </select></label
+              >
+              <label
+                ><span>原密码</span
+                ><input
+                  name="oldPassword"
+                  type="password"
+                  maxlength="6"
+                  inputmode="numeric"
+              /></label>
+              <label
+                ><span>新密码</span
+                ><input
+                  name="newPassword"
+                  type="password"
+                  maxlength="6"
+                  inputmode="numeric"
+              /></label>
+              <label
+                ><span>确认新密码</span
+                ><input
+                  name="confirmPassword"
+                  type="password"
+                  maxlength="6"
+                  inputmode="numeric"
+              /></label>
               <button class="primary-btn" type="submit">保存修改</button>
               <p class="form-message"></p>
             </form>
