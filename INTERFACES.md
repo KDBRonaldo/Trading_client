@@ -1,6 +1,6 @@
 # 交易客户端接口预留说明
 
-当前前端已经把外部交互统一收口到 `app.js` 顶部的 `API_CONFIG` 和一组接口适配函数。其他模块接口确定后，优先改 `API_CONFIG.endpoints` 和对应的 `normalize...` 函数，不需要重写页面业务流程。
+当前前端已经把外部交互拆到独立接口文件。其他模块接口确定后，优先改 `js/config.js` 中的 `API_CONFIG.endpoints` 和对应接口文件里的 `normalize...` 函数，不需要重写页面业务流程。
 
 ## 接口地址配置
 
@@ -263,7 +263,16 @@ GET /api/central-trading/orders/{orderId}/result
 
 ## 代码适配点
 
-主要函数在 `app.js`：
+### 通用请求
+
+文件：`js/api.js`
+
+- `requestJson()`：统一 HTTP 请求、超时、错误处理。
+- `buildApiUrl()`：路径参数替换。
+
+### 资金账户/证券账户系统
+
+文件：`js/account-api.js`
 
 - `verifyFundAccount()`：登录校验。
 - `fetchFundAccount()`：查询资金账户。
@@ -271,8 +280,21 @@ GET /api/central-trading/orders/{orderId}/result
 - `changePasswordViaAccountSystem()`：修改密码。
 - `freezeFunds()` / `releaseFunds()`：冻结/释放资金。
 - `freezeHolding()` / `releaseHolding()`：冻结/释放股票。
-- `reviewOrderByManagement()`：交易管理系统审查。
-- `fetchQuotes()`：中央交易系统行情。
+- `normalizeFundAccountLogin()`：登录返回字段映射。
+
+### 交易管理系统
+
+文件：`js/management-api.js`
+
+- `reviewOrderByManagement()`：买卖委托审查。
+
+### 中央交易系统
+
+文件：`js/central-api.js`
+
+- `fetchQuotes()`：行情查询。
 - `submitOrderToCentral()`：提交委托。
 - `cancelOrderInCentral()`：撤销委托。
 - `fetchOrderResultFromCentral()`：同步成交回报。
+- `normalizeStockQuote()`：行情字段映射。
+- `normalizeOrderStatus()`：委托/成交状态字段映射。

@@ -1,0 +1,34 @@
+const STORAGE_KEY = "stock-trading-client-state";
+const SESSION_LIMIT_MS = 30 * 60 * 1000;
+
+const API_CONFIG = {
+  accountBaseUrl: localStorage.getItem("accountApiBase") || localStorage.getItem("fundAccountApiBase") || "",
+  clientBaseUrl: localStorage.getItem("clientApiBase") || "",
+  managementBaseUrl: localStorage.getItem("managementApiBase") || "",
+  centralBaseUrl: localStorage.getItem("centralTradingApiBase") || "",
+  endpoints: {
+    login: "/api/fund-accounts/login",
+    fundAccount: "/api/fund-accounts/{accountNo}",
+    holdings: "/api/security-accounts/{accountNo}/holdings",
+    changePassword: "/api/fund-accounts/{accountNo}/password",
+    freezeFunds: "/api/fund-accounts/{accountNo}/freeze",
+    releaseFunds: "/api/fund-accounts/{accountNo}/release",
+    freezeHolding: "/api/security-accounts/{accountNo}/holdings/freeze",
+    releaseHolding: "/api/security-accounts/{accountNo}/holdings/release",
+    reviewOrder: "/api/trade-management/orders/review",
+    quotes: "/api/central-trading/stocks",
+    submitOrder: "/api/central-trading/orders",
+    cancelOrder: "/api/central-trading/orders/{orderId}/cancel",
+    orderResult: "/api/central-trading/orders/{orderId}/result",
+    clientSessions: "/api/client/sessions",
+    clientSession: "/api/client/sessions/{sessionId}",
+    clientOrders: "/api/client/orders",
+    clientOrder: "/api/client/orders/{localOrderId}",
+    clientTrades: "/api/client/trades",
+    clientAlerts: "/api/client/alerts",
+    clientAlert: "/api/client/alerts/{alertId}",
+    clientNotifications: "/api/client/notifications",
+    clientNotification: "/api/client/notifications/{notificationId}",
+  },
+  timeoutMs: 5000,
+};

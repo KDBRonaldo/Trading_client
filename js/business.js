@@ -1,0 +1,448 @@
+function validateSession() {
+  if (!state.session || !state.currentAccount) return false;
+  if (Date.now() - state.session.lastActiveAt > SESSION_LIMIT_MS) {
+    logout("会话已超时，请重新登录");
+    return false;
+  }
+  state.session.lastActiveAt = Date.now();
+  saveState();
+  return true;
+}
+
+async function login(accountNo, password) {
+  if (!/^\d{16}$/.test(accountNo)) return { ok: false, message: "卡号格式错误，请输入16位数字" };
+  if (!/^\d{6}$/.test(password)) return { ok: false, message: "密码格式错误，请输入6位数字" };
+  const authResult = await verifyFundAccount(accountNo, password);
+  if (!authResult.ok) return authResult;
+
+  const account = ensureLocalAccount(authResult.account);
+  if (account.status === "锁定") return { ok: false, message: "账户已锁定，请联系客服" };
+  if (account.status !== "正常") return { ok: false, message: `账户状态异常：${account.status}` };
+  if (!authResult.account.securityAccountLinked) return { ok: false, message: "证券账户未关联" };
+
+  account.failedAttempts = 0;
+  const firstLogin = !account.firstLoginDone;
+  account.firstLoginDone = true;
+  const sessionResult = await createClientSession(account);
+  if (!sessionResult.ok) return { ok: false, message: sessionResult.message || "交易客户端会话写入失败" };
+  state.currentAccount = accountNo;
+  state.session = {
+    accountNo,
+    sessionId: sessionResult.sessionId || authResult.token || crypto.randomUUID(),
+    token: authResult.token || sessionResult.sessionId || crypto.randomUUID(),
+    lastActiveAt: Date.now(),
+  };
+  saveState();
+  return { ok: true, message: firstLogin ? "首次登录证书认证通过" : "登录成功" };
+}
+
+function ensureLocalAccount(remoteAccount) {
+  const existing = state.accounts[remoteAccount.accountNo];
+  const fallback = existing || {
+    accountNo: remoteAccount.accountNo,
+    tradePassword: "",
+    withdrawPassword: "",
+    failedAttempts: 0,
+    holdings: [],
+  };
+  state.accounts[remoteAccount.accountNo] = {
+    ...fallback,
+    name: remoteAccount.name,
+    status: remoteAccount.status,
+    securityAccountNo: remoteAccount.securityAccountNo || fallback.securityAccountNo || remoteAccount.accountNo,
+    availableCash: remoteAccount.availableCash,
+    frozenCash: remoteAccount.frozenCash,
+    firstLoginDone: Boolean(fallback.firstLoginDone || remoteAccount.firstLoginDone),
+    securityAccountLinked: remoteAccount.securityAccountLinked,
+  };
+  return state.accounts[remoteAccount.accountNo];
+}
+
+function logout(message = "") {
+  if (state.session?.sessionId) updateClientSession(state.session.sessionId, "LOGOUT");
+  state.currentAccount = null;
+  state.session = null;
+  saveState();
+  dom.loginView.classList.remove("hidden");
+  dom.terminalView.classList.add("hidden");
+  if (message) setMessage(dom.loginMessage, message, "error");
+}
+
+function bootSession() {
+  if (state.session && Date.now() - state.session.lastActiveAt <= SESSION_LIMIT_MS) {
+    state.currentAccount = state.session.accountNo;
+    showTerminal();
+  } else {
+    logout();
+  }
+}
+
+function searchStocks(keyword) {
+  const query = keyword.trim();
+  if (!query) return { error: "请输入股票名称或代码" };
+  if (/^\d+$/.test(query) && !/^\d{6}$/.test(query)) return { error: "股票代码格式错误，请输入6位数字" };
+  const stocks = Object.values(state.stocks).filter((stock) => stock.stockCode === query || stock.name.includes(query));
+  if (!stocks.length) return { error: "未找到匹配的股票，请重新输入" };
+  return { stocks };
+}
+
+function validateOrderInput(form, side) {
+  const stockCode = form.stockCode.value.trim();
+  const rawPrice = form.price.value.trim();
+  const rawQuantity = form.quantity.value.trim();
+  if (!/^\d{6}$/.test(stockCode)) return { error: "股票代码格式错误，请输入6位数字" };
+  const stock = state.stocks[stockCode];
+  if (!stock) return { error: side === "buy" ? "该股票代码不存在" : "您未持有该股票" };
+  if (stock.status !== "可交易") return { error: "该股票当前暂停交易" };
+  if (!/^\d+(\.\d{1,2})?$/.test(rawPrice)) return { error: "价格必须大于0，且最多保留2位小数" };
+  const orderPrice = Number(rawPrice);
+  if (orderPrice <= 0) return { error: "价格必须大于0" };
+  const limits = getLimits(stock);
+  if (orderPrice < limits.lower || orderPrice > limits.upper) return { error: "价格不能超出涨跌停限制范围" };
+  if (!/^\d+$/.test(rawQuantity)) return { error: "数量必须为整数" };
+  const quantity = Number(rawQuantity);
+  if (quantity <= 0 || quantity % 100 !== 0) return { error: side === "buy" ? "购买数量必须为100的整数倍" : "出售数量必须为100的整数倍" };
+  return { stock, stockCode, orderPrice, quantity };
+}
+
+async function refreshExternalData({ randomizeMockQuotes = false } = {}) {
+  const account = currentAccount();
+  if (!account) return;
+
+  const fundResult = await fetchFundAccount(account.accountNo);
+  if (fundResult.ok) {
+    account.availableCash = fundResult.account.availableCash;
+    account.frozenCash = fundResult.account.frozenCash;
+    account.status = fundResult.account.status;
+  } else {
+    toast(fundResult.message || "资金账户信息刷新失败");
+  }
+
+  const holdingResult = await fetchSecurityHoldings(account.accountNo);
+  if (holdingResult.ok) account.holdings = holdingResult.holdings;
+
+  if (API_CONFIG.centralBaseUrl) {
+    const quoteResult = await fetchQuotes();
+    if (quoteResult.ok) {
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
+    } else {
+      toast(quoteResult.message || "中央交易系统行情刷新失败");
+    }
+  } else if (randomizeMockQuotes) {
+    Object.values(state.stocks).forEach((stock) => {
+      const drift = stock.latest * (Math.random() * 0.012 - 0.006);
+      stock.latest = Number(Math.max(0.01, stock.latest + drift).toFixed(2));
+      stock.buyOne = Number((stock.latest - 0.01).toFixed(2));
+      stock.sellOne = Number((stock.latest + 0.01).toFixed(2));
+      stock.high = Math.max(stock.high, stock.latest);
+      stock.low = Math.min(stock.low, stock.latest);
+    });
+  }
+
+  await checkAlerts();
+  saveState();
+  renderAll();
+}
+
+async function submitOrder(form, side) {
+  if (!validateSession()) return;
+  const message = form.querySelector(".form-message");
+  const account = currentAccount();
+  const pendingStockCode = form.stockCode.value.trim();
+  if (API_CONFIG.centralBaseUrl && /^\d{6}$/.test(pendingStockCode)) {
+    const quoteResult = await fetchQuotes(pendingStockCode);
+    if (quoteResult.ok) {
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
+    }
+  }
+  const input = validateOrderInput(form, side);
+  if (input.error) return setMessage(message, input.error, "error");
+
+  const orderDraft = {
+    fundAccountNo: account.accountNo,
+    stockCode: input.stockCode,
+    direction: side === "buy" ? "BUY" : "SELL",
+    price: input.orderPrice,
+    quantity: input.quantity,
+  };
+
+  const review = await reviewOrderByManagement(orderDraft);
+  if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
+
+  if (side === "buy") {
+    const amount = input.orderPrice * input.quantity;
+    if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
+    const freezeResult = await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
+    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
+    account.availableCash -= amount;
+    account.frozenCash += amount;
+  } else {
+    const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+    if (!holding) return setMessage(message, "您未持有该股票", "error");
+    if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
+    const freezeResult = await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
+    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
+    holding.sellable -= input.quantity;
+  }
+
+  const centralResult = await submitOrderToCentral(orderDraft);
+  if (!centralResult.ok) {
+    if (side === "buy") {
+      const amount = input.orderPrice * input.quantity;
+      account.availableCash += amount;
+      account.frozenCash -= amount;
+      await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+    } else {
+      const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+      if (holding) holding.sellable += input.quantity;
+      await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
+    }
+    saveState();
+    renderAll();
+    return setMessage(message, centralResult.message || "中央交易系统拒绝委托，冻结资源已释放", "error");
+  }
+
+  const order = {
+    id: centralResult.orderNo,
+    stockCode: input.stockCode,
+    stockName: input.stock.name,
+    side,
+    price: input.orderPrice,
+    quantity: input.quantity,
+    tradedQuantity: 0,
+    remainingQuantity: input.quantity,
+    status: centralResult.status || "未成交",
+    submitTime: nowText(),
+  };
+  const clientOrderResult = await createClientOrder(order, account);
+  if (clientOrderResult.ok && clientOrderResult.localOrderId) {
+    order.localOrderId = clientOrderResult.localOrderId;
+  } else if (!clientOrderResult.ok) {
+    toast(clientOrderResult.message || "委托记录写入交易客户端数据库失败");
+  }
+  state.orders.unshift(order);
+  saveState();
+  form.reset();
+  setMessage(message, `委托已提交，编号 ${order.id}`, "ok");
+  toast("委托已提交");
+  renderAll();
+}
+
+async function cancelOrder(orderId) {
+  if (!validateSession()) return;
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order || !["未成交", "部分成交"].includes(order.status)) {
+    toast("指令已成交或已撤销，无法撤销");
+    return;
+  }
+  const account = currentAccount();
+  const centralResult = await cancelOrderInCentral(orderId);
+  if (!centralResult.ok) {
+    toast(centralResult.message || "中央交易系统撤销失败");
+    return;
+  }
+  if (order.side === "buy") {
+    const release = order.remainingQuantity * order.price;
+    await releaseFunds(account.accountNo, release, order.id);
+    account.frozenCash -= release;
+    account.availableCash += release;
+  } else {
+    await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, order.id);
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) holding.sellable += order.remainingQuantity;
+  }
+  order.status = "已撤销";
+  order.remainingQuantity = 0;
+  await updateClientOrder(order);
+  saveState();
+  toast("撤销成功，冻结资源已释放");
+  renderAll();
+}
+
+async function simulateTrade(orderId) {
+  if (!validateSession()) return;
+  if (API_CONFIG.centralBaseUrl) {
+    const result = await fetchOrderResultFromCentral(orderId);
+    if (!result.ok) {
+      toast(result.message || "中央交易系统暂无成交回报");
+      return;
+    }
+    await applyCentralTradeResult(orderId, result.result);
+    return;
+  }
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order || order.status !== "未成交") return;
+  const account = currentAccount();
+  order.tradedQuantity = order.quantity;
+  order.remainingQuantity = 0;
+  order.status = "已成交";
+  const amount = order.quantity * order.price;
+
+  if (order.side === "buy") {
+    account.frozenCash -= amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) {
+      const totalCost = holding.cost * holding.quantity + amount;
+      holding.quantity += order.quantity;
+      holding.sellable += order.quantity;
+      holding.cost = totalCost / holding.quantity;
+    } else {
+      account.holdings.push({ stockCode: order.stockCode, quantity: order.quantity, sellable: order.quantity, cost: order.price });
+    }
+  } else {
+    account.availableCash += amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) holding.quantity -= order.quantity;
+    account.holdings = account.holdings.filter((item) => item.quantity > 0);
+  }
+
+  const trade = {
+    id: `T${Date.now()}`,
+    orderId: order.id,
+    stockCode: order.stockCode,
+    stockName: order.stockName,
+    price: order.price,
+    quantity: order.quantity,
+    amount,
+    time: nowText(),
+  };
+  state.trades.unshift(trade);
+  await createClientTrade(trade, order);
+  await updateClientOrder(order);
+  saveState();
+  toast("成交回报已接收，资产与持仓已刷新");
+  renderAll();
+}
+
+async function applyCentralTradeResult(orderId, result) {
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order) return;
+  const account = currentAccount();
+  const tradedQuantity = Number(result.tradedQuantity ?? result.quantity ?? order.quantity);
+  const tradePrice = Number(result.tradePrice ?? result.price ?? order.price);
+  const amount = tradedQuantity * tradePrice;
+  order.tradedQuantity = tradedQuantity;
+  order.remainingQuantity = Math.max(0, order.quantity - tradedQuantity);
+  order.status = result.status ? normalizeOrderStatus(result.status) : (order.remainingQuantity === 0 ? "已成交" : "部分成交");
+
+  if (order.side === "buy") {
+    account.frozenCash -= amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) {
+      const totalCost = holding.cost * holding.quantity + amount;
+      holding.quantity += tradedQuantity;
+      holding.sellable += tradedQuantity;
+      holding.cost = totalCost / holding.quantity;
+    } else {
+      account.holdings.push({ stockCode: order.stockCode, quantity: tradedQuantity, sellable: tradedQuantity, cost: tradePrice });
+    }
+  } else {
+    account.availableCash += amount;
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (holding) holding.quantity -= tradedQuantity;
+    account.holdings = account.holdings.filter((item) => item.quantity > 0);
+  }
+
+  const trade = {
+    id: result.tradeNo || result.tradeId || `T${Date.now()}`,
+    orderId: order.id,
+    stockCode: order.stockCode,
+    stockName: order.stockName,
+    price: tradePrice,
+    quantity: tradedQuantity,
+    amount,
+    time: result.tradeTime || nowText(),
+  };
+  state.trades.unshift(trade);
+  await createClientTrade(trade, order);
+  await updateClientOrder(order);
+  saveState();
+  toast("中央交易系统成交回报已同步");
+  renderAll();
+}
+
+async function createAlert(form) {
+  if (!validateSession()) return;
+  const message = form.querySelector(".form-message");
+  const stockCode = form.stockCode.value.trim();
+  const stock = state.stocks[stockCode];
+  const alertPrice = Number(form.price.value.trim());
+  if (!/^\d{6}$/.test(stockCode) || !stock) return setMessage(message, "股票代码无效", "error");
+  if (!/^\d+(\.\d{1,2})?$/.test(form.price.value.trim()) || alertPrice <= 0) return setMessage(message, "提醒价格必须大于0，且最多保留2位小数", "error");
+  const account = currentAccount();
+  const alert = {
+    id: `A${Date.now()}`,
+    stockCode,
+    stockName: stock.name,
+    direction: form.direction.value,
+    price: alertPrice,
+    status: "启用",
+    createTime: nowText(),
+    triggerTime: "",
+  };
+  const clientAlertResult = await createClientAlert(alert, account);
+  if (clientAlertResult.ok && clientAlertResult.alertId) {
+    alert.alertId = clientAlertResult.alertId;
+  } else if (!clientAlertResult.ok) {
+    toast(clientAlertResult.message || "价格提醒写入交易客户端数据库失败");
+  }
+  state.alerts.unshift(alert);
+  saveState();
+  form.reset();
+  setMessage(message, "提醒规则已保存", "ok");
+  await checkAlerts();
+  renderAlerts();
+}
+
+async function checkAlerts() {
+  for (const alert of state.alerts) {
+    if (alert.status !== "启用") continue;
+    const stock = state.stocks[alert.stockCode];
+    const matched = alert.direction === "ABOVE" ? stock.latest >= alert.price : stock.latest <= alert.price;
+    if (matched) {
+      alert.status = "已触发";
+      alert.triggerTime = nowText();
+      const content = `${alert.stockName} 已触发价格提醒`;
+      await updateClientAlert(alert, { alertStatus: "TRIGGERED", triggerNow: true });
+      await createClientNotification(alert, content);
+      toast(content);
+    }
+  }
+  saveState();
+}
+
+async function deleteAlert(alertId) {
+  const alert = state.alerts.find((item) => item.id === alertId);
+  if (alert) {
+    alert.status = "停用";
+    await updateClientAlert(alert, { alertStatus: "DISABLED" });
+  }
+  state.alerts = state.alerts.filter((item) => item.id !== alertId);
+  saveState();
+  renderAlerts();
+}
+
+async function changePassword(form) {
+  if (!validateSession()) return;
+  const account = currentAccount();
+  const message = form.querySelector(".form-message");
+  const type = form.type.value;
+  const oldPassword = form.oldPassword.value.trim();
+  const newPassword = form.newPassword.value.trim();
+  const confirmPassword = form.confirmPassword.value.trim();
+  const key = type === "trade" ? "tradePassword" : "withdrawPassword";
+  if (oldPassword !== account[key]) return setMessage(message, "原密码错误，请重新输入", "error");
+  if (!/^\d{6}$/.test(newPassword) || /^(\d)\1{5}$/.test(newPassword)) return setMessage(message, "密码格式不符合要求", "error");
+  if (newPassword === oldPassword) return setMessage(message, "新密码不能与原密码相同", "error");
+  if (newPassword !== confirmPassword) return setMessage(message, "两次输入的密码不一致，请重新输入", "error");
+  const result = await changePasswordViaAccountSystem(account.accountNo, type, oldPassword, newPassword);
+  if (!result.ok) return setMessage(message, result.message || "资金账户系统修改密码失败", "error");
+  account[key] = newPassword;
+  saveState();
+  form.reset();
+  setMessage(message, "密码修改成功", "ok");
+}

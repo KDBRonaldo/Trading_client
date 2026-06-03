@@ -46,10 +46,77 @@ location.reload();
 .
 ├── index.html
 ├── styles.css
+├── js/
+│   ├── config.js
+│   ├── mock-data.js
+│   ├── state.js
+│   ├── dom.js
+│   ├── api.js
+│   ├── account-api.js
+│   ├── management-api.js
+│   ├── central-api.js
+│   ├── render.js
+│   └── business.js
 ├── app.js
+├── database/
+│   └── schema.sql
+├── INTERFACES.md
+├── DATABASE.md
+├── TEAM_WORK.md
 └── README.md
 ```
 
+## 分工建议
+
+- `js/api.js`：通用 HTTP 请求工具，通常不用改。
+- `js/account-api.js`：资金账户/证券账户系统接口，账户对接同学主要改这里。
+- `js/management-api.js`：交易管理系统审查接口，交易对接同学改这里。
+- `js/central-api.js`：中央交易系统行情、委托、撤单、成交接口，交易对接同学改这里。
+- `js/business.js`：登录、买卖、撤单、成交同步、提醒、密码修改等业务流程。
+- `js/render.js`、`styles.css`：页面展示和样式。
+- `js/mock-data.js`：本地演示数据。
+- `database/schema.sql`：交易客户端本地 MySQL 建表脚本。
+- `app.js`：事件绑定和启动入口，尽量少改。
+
 ## 后续对接建议
 
-如果后续要接入 Java/Spring Boot 后端，优先对齐 `INTERFACES.md` 中的请求和返回格式。若其他小组字段名不同，主要修改 `app.js` 中的 `normalizeFundAccountLogin()`、`normalizeStockQuote()` 和 `normalizeOrderStatus()`。
+如果后续要接入 Java/Spring Boot 后端，优先对齐 `INTERFACES.md` 中的请求和返回格式。若账户组字段名不同，主要改 `js/account-api.js`；若中央交易组字段名不同，主要改 `js/central-api.js`。
+
+交易客户端需要维护本地数据库，具体说明见 `DATABASE.md`。浏览器前端不能直接连接 MySQL，正式实现时需要一个交易客户端后端服务来读写 `login_session`、`order_record`、`trade_record`、`price_alert`、`alert_notification` 等表。
+
+## Trading client backend
+
+The `server/` directory is the reserved backend for the trading client itself.
+It currently provides the login session persistence API:
+
+```text
+POST /api/client/sessions
+PATCH /api/client/sessions/{sessionId}
+GET /api/client/health
+GET /api/client/orders
+POST /api/client/orders
+PATCH /api/client/orders/{localOrderId}
+GET /api/client/trades
+POST /api/client/trades
+GET /api/client/alerts
+POST /api/client/alerts
+PATCH /api/client/alerts/{alertId}
+GET /api/client/notifications
+POST /api/client/notifications
+PATCH /api/client/notifications/{notificationId}
+```
+
+To use it:
+
+```bash
+cp .env.example .env
+npm install
+npm run dev
+```
+
+Create the MySQL tables first with `database/schema.sql`, then configure the frontend in the browser console:
+
+```js
+localStorage.setItem("clientApiBase", "http://localhost:8090");
+location.reload();
+```
