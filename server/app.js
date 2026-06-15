@@ -7,6 +7,8 @@ const ordersRouter = require("./routes/orders");
 const tradesRouter = require("./routes/trades");
 const alertsRouter = require("./routes/alerts");
 const notificationsRouter = require("./routes/notifications");
+const centralRouter = require("./routes/central");
+const { startKafka } = require("./kafka");
 
 const app = express();
 const port = Number(process.env.PORT || 8090);
@@ -23,15 +25,25 @@ app.use("/api/client/orders", ordersRouter);
 app.use("/api/client/trades", tradesRouter);
 app.use("/api/client/alerts", alertsRouter);
 app.use("/api/client/notifications", notificationsRouter);
+app.use("/api/client/central", centralRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({
+  const statusCode = err.statusCode || 500;
+  res.status(statusCode).json({
     ok: false,
-    message: "Trading client server error",
+    message: statusCode === 500 ? "Trading client server error" : err.message,
   });
 });
 
 app.listen(port, () => {
   console.log(`Trading client API listening on http://localhost:${port}`);
+});
+
+startKafka().then((result) => {
+  if (result.ok) {
+    console.log("Kafka pipeline connected");
+  } else {
+    console.log(`Kafka pipeline not started: ${result.message}`);
+  }
 });

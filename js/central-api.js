@@ -1,4 +1,24 @@
 async function fetchQuotes(keyword = "") {
+  if (!API_CONFIG.centralBaseUrl && API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled) {
+    const query = keyword ? `?keyword=${encodeURIComponent(keyword)}` : "";
+    const result = await requestJson(
+      API_CONFIG.clientBaseUrl,
+      `${API_CONFIG.endpoints.kafkaQuotes}${query}`,
+    );
+    if (!result.ok) return result;
+    const payload = result.data.data || result.data.stocks || result.data;
+    const stocks = (Array.isArray(payload) ? payload : []).map(
+      normalizeStockQuote,
+    );
+    if (!stocks.length && result.data.pending) {
+      return {
+        ok: false,
+        message: "行情请求已发送，等待中央交易系统返回后再刷新",
+      };
+    }
+    return { ok: true, stocks };
+  }
+
   if (!API_CONFIG.centralBaseUrl) {
     const result = searchStocks(keyword || "");
     if (result.error) return { ok: false, message: result.error };
@@ -65,7 +85,7 @@ function normalizeOrderStatus(status) {
 
 async function submitOrderToCentral(orderPayload) {
   if (!API_CONFIG.centralBaseUrl)
-    return { ok: true, orderNo: `O${Date.now()}`, status: "未成交" };
+    return submitOrderViaKafkaOrMock(orderPayload);
   const result = await requestJson(
     API_CONFIG.centralBaseUrl,
     API_CONFIG.endpoints.submitOrder,
@@ -90,7 +110,7 @@ async function submitOrderToCentral(orderPayload) {
 }
 
 async function cancelOrderInCentral(orderId) {
-  if (!API_CONFIG.centralBaseUrl) return { ok: true };
+  if (!API_CONFIG.centralBaseUrl) return cancelOrderViaKafkaOrMock(orderId);
   const result = await requestJson(
     API_CONFIG.centralBaseUrl,
     API_CONFIG.endpoints.cancelOrder,
@@ -111,6 +131,15 @@ async function cancelOrderInCentral(orderId) {
 }
 
 async function fetchOrderResultFromCentral(orderId) {
+  if (!API_CONFIG.centralBaseUrl && API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled) {
+    const result = await requestJson(
+      API_CONFIG.clientBaseUrl,
+      API_CONFIG.endpoints.kafkaOrderResult,
+      { params: { orderId } },
+    );
+    if (!result.ok) return result;
+    return { ok: true, result: result.data.data || result.data };
+  }
   if (!API_CONFIG.centralBaseUrl) return { ok: false, mock: true };
   const result = await requestJson(
     API_CONFIG.centralBaseUrl,
@@ -119,4 +148,62 @@ async function fetchOrderResultFromCentral(orderId) {
   );
   if (!result.ok) return result;
   return { ok: true, result: result.data.data || result.data };
+}
+
+async function submitOrderViaKafkaOrMock(orderPayload) {
+  if (!API_CONFIG.clientBaseUrl || !API_CONFIG.centralKafkaEnabled)
+    return { ok: true, orderNo: `O${Date.now()}`, status: "未成交" };
+
+  const result = await requestJson(
+    API_CONFIG.clientBaseUrl,
+    API_CONFIG.endpoints.kafkaSubmitOrder,
+    {
+      method: "POST",
+      body: {
+        ...orderPayload,
+        orderNo: `C${Date.now()}`,
+        timestamp: new Date().toISOString(),
+      },
+    },
+  );
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.order || result.data;
+  if (result.data.success === false || payload.accepted === false) {
+    return {
+      ok: false,
+      message: result.data.message || payload.message || "中央交易系统 Kafka 管道拒绝委托",
+    };
+  }
+  return {
+    ok: true,
+    orderNo: payload.orderNo || `C${Date.now()}`,
+    status: normalizeOrderStatus(payload.status || "SUBMITTED"),
+  };
+}
+
+async function cancelOrderViaKafkaOrMock(orderId) {
+  if (!API_CONFIG.clientBaseUrl || !API_CONFIG.centralKafkaEnabled) return { ok: true };
+
+  const account = currentAccount();
+  const result = await requestJson(
+    API_CONFIG.clientBaseUrl,
+    API_CONFIG.endpoints.kafkaCancelOrder,
+    {
+      params: { orderId },
+      method: "POST",
+      body: {
+        fundAccountNo: account?.accountNo,
+        timestamp: new Date().toISOString(),
+      },
+    },
+  );
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data;
+  if (result.data.success === false || payload.canceled === false) {
+    return {
+      ok: false,
+      message: result.data.message || payload.message || "中央交易系统 Kafka 管道拒绝撤单",
+    };
+  }
+  return { ok: true };
 }
