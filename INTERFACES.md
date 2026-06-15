@@ -151,11 +151,17 @@ POST /api/trade-management/orders/review
 
 ```json
 {
+  "reviewId": "R1710000000000",
+  "orderId": "C1710000000000",
+  "accountId": "6222026000000001",
   "fundAccountNo": "6222026000000001",
+  "securityAccountNo": "A000001",
   "stockCode": "600519",
-  "direction": "BUY",
+  "side": "BUY",
   "price": 1688.35,
-  "quantity": 100
+  "quantity": 100,
+  "amount": 168835,
+  "clientTime": "2026-06-15T10:00:00+08:00"
 }
 ```
 
@@ -165,11 +171,16 @@ POST /api/trade-management/orders/review
 {
   "success": true,
   "data": {
+    "reviewId": "R1710000000000",
+    "orderId": "C1710000000000",
     "approved": true,
+    "riskLevel": "LOW",
     "message": "审查通过"
   }
 }
 ```
+
+正式契约见 `MANAGEMENT_CONTRACT.md`。
 
 ## 中央交易系统
 

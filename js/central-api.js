@@ -161,7 +161,7 @@ async function submitOrderViaKafkaOrMock(orderPayload) {
       method: "POST",
       body: {
         ...orderPayload,
-        orderNo: `C${Date.now()}`,
+        orderNo: orderPayload.orderNo || orderPayload.orderId || `C${Date.now()}`,
         timestamp: new Date().toISOString(),
       },
     },
@@ -176,7 +176,7 @@ async function submitOrderViaKafkaOrMock(orderPayload) {
   }
   return {
     ok: true,
-    orderNo: payload.orderNo || `C${Date.now()}`,
+    orderNo: payload.orderNo || payload.orderId || orderPayload.orderNo || orderPayload.orderId || `C${Date.now()}`,
     status: normalizeOrderStatus(payload.status || "SUBMITTED"),
   };
 }

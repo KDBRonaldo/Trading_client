@@ -16,7 +16,7 @@ router.get("/kafka/status", (req, res) => {
 router.post("/orders", async (req, res, next) => {
   try {
     const body = req.body;
-    const orderNo = body.orderNo || `C${Date.now()}`;
+    const orderNo = body.orderNo || body.orderId || `C${Date.now()}`;
     const message = await publishOrderCommand({
       orderNo,
       fundAccountNo: body.fundAccountNo,

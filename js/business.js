@@ -162,12 +162,19 @@ async function submitOrder(form, side) {
   const input = validateOrderInput(form, side);
   if (input.error) return setMessage(message, input.error, "error");
 
+  const orderSeed = Date.now();
+  const orderId = `C${orderSeed}`;
   const orderDraft = {
+    reviewId: `R${orderSeed}`,
+    orderId,
+    orderNo: orderId,
     fundAccountNo: account.accountNo,
+    securityAccountNo: account.securityAccountNo || account.accountNo,
     stockCode: input.stockCode,
     direction: side === "buy" ? "BUY" : "SELL",
     price: input.orderPrice,
     quantity: input.quantity,
+    clientTime: new Date().toISOString(),
   };
 
   const review = await reviewOrderByManagement(orderDraft);

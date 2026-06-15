@@ -14,7 +14,9 @@
 
 ## 外部系统接口
 
-详细接口契约见 `INTERFACES.md`。
+详细接口契约见 `INTERFACES.md`。交易管理系统审查接口以
+`MANAGEMENT_CONTRACT.md` 为准；中央交易系统 Kafka 消息以
+`KAFKA_CONTRACT.md` 为准。
 
 默认没有配置接口地址，因此会走本地 mock。若其他模块已经启动，在浏览器控制台执行：
 
