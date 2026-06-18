@@ -1,8 +1,14 @@
 function buildApiUrl(baseUrl, endpoint, params = {}) {
-  const path = endpoint.replace(/\{(\w+)\}/g, (_, key) =>
-    encodeURIComponent(params[key] ?? ""),
-  );
-  return `${baseUrl}${path}`;
+  const consumed = new Set();
+  const path = endpoint.replace(/\{(\w+)\}/g, (_, key) => {
+    consumed.add(key);
+    return encodeURIComponent(params[key] ?? "");
+  });
+  const remaining = Object.entries(params)
+    .filter(([k]) => !consumed.has(k) && params[k] !== undefined && params[k] !== null)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  const query = remaining.length ? `?${remaining.join("&")}` : "";
+  return `${baseUrl}${path}${query}`;
 }
 
 async function requestJson(

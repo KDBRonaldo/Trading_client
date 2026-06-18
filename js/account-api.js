@@ -7,7 +7,7 @@ async function verifyFundAccount(accountNo, password) {
     API_CONFIG.endpoints.login,
     {
       method: "POST",
-      body: { fundAccountNo: accountNo, tradePassword: password },
+      body: { fund_acc_no: accountNo, trade_password: password },
     },
   );
   if (!result.ok)
@@ -16,25 +16,21 @@ async function verifyFundAccount(accountNo, password) {
 }
 
 function normalizeFundAccountLogin(data, accountNo) {
-  if (data.success === false || data.ok === false || data.code === "FAIL") {
+  if (data.success === false || data.ok === false || (data.code !== undefined && data.code !== 0)) {
     return { ok: false, message: data.message || "登录失败" };
   }
   const payload = data.data || data.account || data;
   const account = {
-    accountNo: payload.fundAccountNo || payload.accountNo || accountNo,
-    securityAccountNo: payload.securityAccountNo || payload.stockAccountNo || payload.securitiesAccountNo || accountNo,
-    name: payload.investorName || payload.name || "投资者",
-    status: payload.accountStatus || payload.status || "正常",
-    availableCash: Number(
-      payload.availableCash ?? payload.availableBalance ?? 0,
-    ),
-    frozenCash: Number(payload.frozenCash ?? payload.frozenBalance ?? 0),
-    firstLoginDone: Boolean(
-      payload.firstLoginDone ?? payload.certificated ?? true,
-    ),
-    securityAccountLinked: payload.securityAccountLinked !== false,
+    accountNo: payload.fund_acc_no || accountNo,
+    securityAccountNo: payload.sec_acc_no || accountNo,
+    name: "投资者",
+    status: payload.status || "正常",
+    availableCash: 0,
+    frozenCash: 0,
+    firstLoginDone: true,
+    securityAccountLinked: !!payload.sec_acc_no,
   };
-  return { ok: true, account, token: payload.token || data.token };
+  return { ok: true, account };
 }
 
 function verifyFundAccountMock(accountNo, password) {
@@ -66,7 +62,6 @@ function verifyFundAccountMock(accountNo, password) {
       firstLoginDone: account.firstLoginDone,
       securityAccountLinked: account.securityAccountLinked !== false,
     },
-    token: crypto.randomUUID(),
   };
 }
 
@@ -87,19 +82,20 @@ async function fetchFundAccount(accountNo) {
   const result = await requestJson(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.fundAccount,
-    { params: { accountNo } },
+    { params: { fund_acc_no: accountNo } },
   );
   if (!result.ok) return result;
+  if (result.data?.code && result.data.code !== 0) {
+    return { ok: false, message: result.data.message || "查询资金账户失败" };
+  }
   const payload = result.data.data || result.data.account || result.data;
   return {
     ok: true,
     account: {
       accountNo,
-      availableCash: Number(
-        payload.availableCash ?? payload.availableBalance ?? 0,
-      ),
-      frozenCash: Number(payload.frozenCash ?? payload.frozenBalance ?? 0),
-      status: payload.accountStatus || payload.status || "正常",
+      availableCash: Number(payload.available_balance ?? 0),
+      frozenCash: Number(payload.frozen_balance ?? 0),
+      status: payload.status || "正常",
     },
   };
 }
@@ -111,20 +107,21 @@ async function fetchSecurityHoldings(accountNo) {
   const result = await requestJson(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.holdings,
-    { params: { accountNo } },
+    { params: { sec_acc_no: currentAccount()?.securityAccountNo } },
   );
   if (!result.ok) return result;
+  if (result.data?.code && result.data.code !== 0) {
+    return { ok: false, message: result.data.message || "查询证券持仓失败" };
+  }
   const payload = result.data.data || result.data.holdings || result.data;
   const rows = Array.isArray(payload) ? payload : [];
   return {
     ok: true,
     holdings: rows.map((item) => ({
       stockCode: item.stockCode,
-      quantity: Number(item.quantity ?? item.holdingQuantity ?? 0),
-      sellable: Number(
-        item.sellable ?? item.sellableQuantity ?? item.availableQuantity ?? 0,
-      ),
-      cost: Number(item.cost ?? item.costPrice ?? 0),
+      quantity: Number(item.quantity ?? 0),
+      sellable: Number(item.available_quantity ?? 0),
+      cost: Number(item.avg_cost ?? 0),
     })),
   };
 }
@@ -140,61 +137,22 @@ async function changePasswordViaAccountSystem(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.changePassword,
     {
-      params: { accountNo },
-      method: "POST",
-      body: { passwordType: type, oldPassword, newPassword },
+      method: "PUT",
+      body: { fund_acc_no: accountNo, password_type: type, old_password: oldPassword, new_password: newPassword },
     },
   );
 }
 
+// 当前版本冻结/释放已移交中央交易系统，保留空函数供 business.js 本地流程使用
 async function freezeFunds(accountNo, amount, orderRef) {
-  if (!API_CONFIG.accountBaseUrl) return { ok: true };
-  return requestJson(
-    API_CONFIG.accountBaseUrl,
-    API_CONFIG.endpoints.freezeFunds,
-    {
-      params: { accountNo },
-      method: "POST",
-      body: { amount, orderRef },
-    },
-  );
+  return { ok: true };
 }
-
 async function releaseFunds(accountNo, amount, orderRef) {
-  if (!API_CONFIG.accountBaseUrl) return { ok: true };
-  return requestJson(
-    API_CONFIG.accountBaseUrl,
-    API_CONFIG.endpoints.releaseFunds,
-    {
-      params: { accountNo },
-      method: "POST",
-      body: { amount, orderRef },
-    },
-  );
+  return { ok: true };
 }
-
 async function freezeHolding(accountNo, stockCode, quantity, orderRef) {
-  if (!API_CONFIG.accountBaseUrl) return { ok: true };
-  return requestJson(
-    API_CONFIG.accountBaseUrl,
-    API_CONFIG.endpoints.freezeHolding,
-    {
-      params: { accountNo },
-      method: "POST",
-      body: { stockCode, quantity, orderRef },
-    },
-  );
+  return { ok: true };
 }
-
 async function releaseHolding(accountNo, stockCode, quantity, orderRef) {
-  if (!API_CONFIG.accountBaseUrl) return { ok: true };
-  return requestJson(
-    API_CONFIG.accountBaseUrl,
-    API_CONFIG.endpoints.releaseHolding,
-    {
-      params: { accountNo },
-      method: "POST",
-      body: { stockCode, quantity, orderRef },
-    },
-  );
+  return { ok: true };
 }
