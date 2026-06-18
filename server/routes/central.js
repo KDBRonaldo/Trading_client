@@ -19,9 +19,9 @@ router.post("/orders", async (req, res, next) => {
     const orderNo = body.orderNo || body.orderId || `C${Date.now()}`;
     const message = await publishOrderCommand({
       orderNo,
-      fundAccountNo: body.fundAccountNo,
+      fundAccountNo: body.fundAccountNo || body.accountId,
       stockCode: body.stockCode,
-      direction: body.direction,
+      direction: body.direction || body.side,
       price: body.price,
       quantity: body.quantity,
       timestamp: body.timestamp,
@@ -45,7 +45,7 @@ router.post("/orders/:orderId/cancel", async (req, res, next) => {
   try {
     const message = await publishCancelCommand({
       orderId: req.params.orderId,
-      fundAccountNo: req.body.fundAccountNo,
+      fundAccountNo: req.body.fundAccountNo || req.body.accountId,
       timestamp: req.body.timestamp,
     });
 

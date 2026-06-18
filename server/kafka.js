@@ -1,3 +1,4 @@
+const fs = require("fs");
 const pool = require("./db");
 
 let Kafka;
@@ -30,14 +31,100 @@ const STATUS_MAP = {
   REJECTED: "REJECTED",
 };
 
+const OUTBOUND_SIDES = new Set(["BUY", "SELL"]);
+const ORDER_REPORT_STATUSES = new Set(Object.keys(STATUS_MAP));
+
 let producer;
 let consumer;
 let kafkaStarted = false;
 let kafkaStartError = "";
 const stockQuotes = new Map();
 
+const kafkaRuntime = {
+  producerConnected: false,
+  consumerConnected: false,
+  producedMessages: 0,
+  receivedMessages: 0,
+  invalidMessages: 0,
+  ignoredMessages: 0,
+  duplicateTrades: 0,
+  missingOrders: 0,
+  handledStockQuotes: 0,
+  handledTradeReports: 0,
+  handledOrderReports: 0,
+  lastProducedAt: null,
+  lastProducedTopic: "",
+  lastReceivedAt: null,
+  lastReceivedTopic: "",
+  lastErrorAt: null,
+  lastError: "",
+  lastInvalidMessage: "",
+};
+
 function kafkaEnabled() {
   return process.env.KAFKA_ENABLED === "true";
+}
+
+function boolEnv(name, defaultValue = false) {
+  const value = process.env[name];
+  if (value === undefined || value === "") return defaultValue;
+  return value === "true";
+}
+
+function readOptionalFile(path) {
+  if (!path) return undefined;
+  return fs.readFileSync(path, "utf8");
+}
+
+function buildKafkaClientConfig() {
+  const config = {
+    clientId: process.env.KAFKA_CLIENT_ID || "trading-client",
+    brokers: (process.env.KAFKA_BROKERS || "localhost:9092")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  };
+
+  const ssl = buildKafkaSslConfig();
+  if (ssl) config.ssl = ssl;
+
+  const sasl = buildKafkaSaslConfig();
+  if (sasl) config.sasl = sasl;
+
+  return config;
+}
+
+function buildKafkaSslConfig() {
+  if (!boolEnv("KAFKA_SSL")) return undefined;
+
+  const ssl = {
+    rejectUnauthorized: boolEnv("KAFKA_SSL_REJECT_UNAUTHORIZED", true),
+  };
+
+  const ca = readOptionalFile(process.env.KAFKA_SSL_CA_PATH);
+  const cert = readOptionalFile(process.env.KAFKA_SSL_CERT_PATH);
+  const key = readOptionalFile(process.env.KAFKA_SSL_KEY_PATH);
+
+  if (ca) ssl.ca = [ca];
+  if (cert) ssl.cert = cert;
+  if (key) ssl.key = key;
+
+  return ssl;
+}
+
+function buildKafkaSaslConfig() {
+  const mechanism = process.env.KAFKA_SASL_MECHANISM;
+  if (!mechanism) return undefined;
+
+  const username = process.env.KAFKA_SASL_USERNAME;
+  const password = process.env.KAFKA_SASL_PASSWORD;
+  if (!username || !password) {
+    throw new Error(
+      "KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD are required when KAFKA_SASL_MECHANISM is set.",
+    );
+  }
+
+  return { mechanism, username, password };
 }
 
 function requireKafkaReady() {
@@ -71,22 +158,20 @@ async function startKafka() {
     return { ok: false, message: kafkaStartError };
   }
 
-  const kafka = new Kafka({
-    clientId: process.env.KAFKA_CLIENT_ID || "trading-client",
-    brokers: (process.env.KAFKA_BROKERS || "localhost:9092")
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  });
-
-  producer = kafka.producer();
-  consumer = kafka.consumer({
-    groupId: process.env.KAFKA_GROUP_ID || "trading-client-group",
-  });
-
   try {
+    const kafka = new Kafka(buildKafkaClientConfig());
+
+    producer = kafka.producer();
+    consumer = kafka.consumer({
+      groupId: process.env.KAFKA_GROUP_ID || "trading-client-group",
+    });
+
     await producer.connect();
+    kafkaRuntime.producerConnected = true;
+
     await consumer.connect();
+    kafkaRuntime.consumerConnected = true;
+
     await consumer.subscribe({
       topic: TOPICS.tradeReport,
       fromBeginning: false,
@@ -101,83 +186,163 @@ async function startKafka() {
     });
     await consumer.run({
       eachMessage: async ({ topic, message }) => {
-        const payload = parseMessage(message);
-        if (topic === TOPICS.tradeReport) {
-          await handleTradeReport(payload);
-        } else if (topic === TOPICS.orderReport) {
-          await handleOrderReport(payload);
-        } else if (topic === TOPICS.stockQuote) {
-          handleStockQuote(payload);
-        }
+        await handleKafkaMessage(topic, message);
       },
     });
     kafkaStarted = true;
+    kafkaStartError = "";
     return { ok: true };
   } catch (error) {
+    kafkaStarted = false;
+    kafkaRuntime.producerConnected = false;
+    kafkaRuntime.consumerConnected = false;
     kafkaStartError = error.message;
+    rememberError(error);
     console.error("Kafka startup failed:", error);
     return { ok: false, message: error.message };
   }
 }
 
+async function handleKafkaMessage(topic, message) {
+  kafkaRuntime.receivedMessages += 1;
+  kafkaRuntime.lastReceivedAt = new Date().toISOString();
+  kafkaRuntime.lastReceivedTopic = topic;
+
+  const parsed = parseMessage(message);
+  if (!parsed.ok) {
+    rememberInvalidMessage(topic, parsed.error.message);
+    return;
+  }
+
+  try {
+    if (topic === TOPICS.tradeReport) {
+      await handleTradeReport(parsed.payload);
+    } else if (topic === TOPICS.orderReport) {
+      await handleOrderReport(parsed.payload);
+    } else if (topic === TOPICS.stockQuote) {
+      handleStockQuote(parsed.payload);
+    } else {
+      kafkaRuntime.ignoredMessages += 1;
+    }
+  } catch (error) {
+    rememberError(error);
+    console.error(`Kafka message handling failed on ${topic}:`, error);
+  }
+}
+
 function parseMessage(message) {
-  const raw = message.value ? message.value.toString() : "{}";
-  return JSON.parse(raw);
+  const raw = message.value ? message.value.toString("utf8") : "{}";
+  try {
+    return { ok: true, payload: JSON.parse(raw) };
+  } catch (error) {
+    return { ok: false, error };
+  }
 }
 
 async function publishOrderCommand(order) {
+  const value = buildOrderCommand(order);
   requireKafkaReady();
-  const value = {
-    accountId: order.fundAccountNo,
-    orderId: order.orderNo,
-    stockCode: order.stockCode,
-    side: order.direction,
-    price: Number(order.price),
-    quantity: Number(order.quantity),
-    timestamp: order.timestamp || new Date().toISOString(),
-  };
   await producer.send({
     topic: TOPICS.orderCommand,
     messages: [{ key: value.orderId, value: JSON.stringify(value) }],
   });
+  rememberProduced(TOPICS.orderCommand);
+  return value;
+}
+
+function buildOrderCommand(order) {
+  const value = {
+    accountId: order.fundAccountNo || order.accountId,
+    orderId: order.orderNo || order.orderId,
+    stockCode: String(order.stockCode || ""),
+    side: order.direction || order.side,
+    price: Number(order.price),
+    quantity: Number(order.quantity),
+    timestamp: order.timestamp || new Date().toISOString(),
+  };
+
+  assertRequired(value.accountId, "accountId is required");
+  assertRequired(value.orderId, "orderId is required");
+  assertStockCode(value.stockCode, "stockCode must be a 6 digit code");
+  assertOneOf(value.side, OUTBOUND_SIDES, "side must be BUY or SELL");
+  assertPositiveNumber(value.price, "price must be greater than 0");
+  assertPositiveInteger(value.quantity, "quantity must be a positive integer");
+  assertIsoDate(value.timestamp, "timestamp must be an ISO 8601 string");
+
   return value;
 }
 
 async function publishCancelCommand(cancel) {
+  const value = buildCancelCommand(cancel);
   requireKafkaReady();
-  const value = {
-    orderId: cancel.orderId,
-    accountId: cancel.fundAccountNo,
-    timestamp: cancel.timestamp || new Date().toISOString(),
-  };
   await producer.send({
     topic: TOPICS.cancelCommand,
     messages: [{ key: value.orderId, value: JSON.stringify(value) }],
   });
+  rememberProduced(TOPICS.cancelCommand);
+  return value;
+}
+
+function buildCancelCommand(cancel) {
+  const value = {
+    orderId: cancel.orderId || cancel.orderNo,
+    accountId: cancel.fundAccountNo || cancel.accountId,
+    timestamp: cancel.timestamp || new Date().toISOString(),
+  };
+
+  assertRequired(value.orderId, "orderId is required");
+  assertRequired(value.accountId, "accountId is required");
+  assertIsoDate(value.timestamp, "timestamp must be an ISO 8601 string");
+
   return value;
 }
 
 async function publishStockQuery(stockCode) {
+  const value = buildStockQuery(stockCode);
   requireKafkaReady();
+  await producer.send({
+    topic: TOPICS.stockQuery,
+    messages: [{ key: value.stockCode, value: JSON.stringify(value) }],
+  });
+  rememberProduced(TOPICS.stockQuery);
+  return value;
+}
+
+function buildStockQuery(stockCode) {
   const value = {
-    stockCode,
+    stockCode: String(stockCode || ""),
     queryId: `Q${Date.now()}`,
     timestamp: new Date().toISOString(),
   };
-  await producer.send({
-    topic: TOPICS.stockQuery,
-    messages: [{ key: stockCode, value: JSON.stringify(value) }],
-  });
+
+  assertStockCode(value.stockCode, "stockCode must be a 6 digit code");
+  assertIsoDate(value.timestamp, "timestamp must be an ISO 8601 string");
+
   return value;
 }
 
 function handleStockQuote(payload) {
   const rows = Array.isArray(payload) ? payload : payload.stocks || [payload];
   rows.forEach((item) => {
-    if (!item || !item.stockCode) return;
+    const error = validateStockQuote(item);
+    if (error) {
+      rememberInvalidMessage(TOPICS.stockQuote, error);
+      return;
+    }
     const quote = normalizeStockQuote(item);
     stockQuotes.set(quote.stockCode, quote);
+    kafkaRuntime.handledStockQuotes += 1;
   });
+}
+
+function validateStockQuote(item) {
+  if (!item || typeof item !== "object") return "stock quote must be an object";
+  if (!isStockCode(item.stockCode))
+    return "stock quote stockCode must be a 6 digit code";
+  if (!isFiniteNumber(item.latestPrice ?? item.latest ?? item.currentPrice)) {
+    return "stock quote latestPrice must be a number";
+  }
+  return "";
 }
 
 function normalizeStockQuote(item) {
@@ -224,6 +389,12 @@ function getCachedStockQuotes(keyword = "") {
 }
 
 async function handleTradeReport(report) {
+  const error = validateTradeReport(report);
+  if (error) {
+    rememberInvalidMessage(TOPICS.tradeReport, error);
+    return;
+  }
+
   const orderNos = [
     report.buyerOrderId,
     report.sellOrderId,
@@ -231,13 +402,39 @@ async function handleTradeReport(report) {
     report.orderId,
     report.orderNo,
   ].filter(Boolean);
-  const tradeQuantity = Number(report.tradeQuantity ?? report.quantity ?? 0);
-  const tradePrice = Number(report.tradePrice ?? report.price ?? 0);
-  if (!orderNos.length || tradeQuantity <= 0 || tradePrice <= 0) return;
+  const tradeQuantity = Number(report.tradeQuantity ?? report.quantity);
+  const tradePrice = Number(report.tradePrice ?? report.price);
 
   for (const orderNo of orderNos) {
     await applyTradeReportToOrder(orderNo, report, tradePrice, tradeQuantity);
   }
+}
+
+function validateTradeReport(report) {
+  if (!report || typeof report !== "object")
+    return "trade report must be an object";
+  const orderNos = [
+    report.buyerOrderId,
+    report.sellOrderId,
+    report.sellerOrderId,
+    report.orderId,
+    report.orderNo,
+  ].filter(Boolean);
+  if (!orderNos.length)
+    return "trade report must include orderId, buyerOrderId, or sellerOrderId";
+  if (!report.tradeNo) return "trade report tradeNo is required";
+  if (!isStockCode(report.stockCode))
+    return "trade report stockCode must be a 6 digit code";
+  if (!isPositiveNumber(report.tradePrice ?? report.price)) {
+    return "trade report tradePrice must be greater than 0";
+  }
+  if (!isPositiveInteger(report.tradeQuantity ?? report.quantity)) {
+    return "trade report tradeQuantity must be a positive integer";
+  }
+  if (report.tradeTime && !isIsoDate(report.tradeTime)) {
+    return "trade report tradeTime must be an ISO 8601 string";
+  }
+  return "";
 }
 
 async function applyTradeReportToOrder(
@@ -246,78 +443,239 @@ async function applyTradeReportToOrder(
   tradePrice,
   tradeQuantity,
 ) {
-  const [orders] = await pool.execute(
-    `SELECT local_order_id, order_quantity, traded_quantity, stock_code
-     FROM order_record
-     WHERE order_no = ?
-     LIMIT 1`,
-    [orderNo],
-  );
-  if (!orders.length) return;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
 
-  const order = orders[0];
-  const nextTradedQuantity = Number(order.traded_quantity) + tradeQuantity;
-  const remainingQuantity = Math.max(
-    0,
-    Number(order.order_quantity) - nextTradedQuantity,
-  );
-  const orderStatus = remainingQuantity === 0 ? "TRADED" : "PART_TRADED";
-  const tradeNo = report.tradeNo
-    ? `${report.tradeNo}-${order.local_order_id}`
-    : `TR-${orderNo}-${Date.now()}`;
+    const [orders] = await connection.execute(
+      `SELECT local_order_id, order_quantity, traded_quantity, stock_code
+       FROM order_record
+       WHERE order_no = ?
+       LIMIT 1
+       FOR UPDATE`,
+      [orderNo],
+    );
+    if (!orders.length) {
+      kafkaRuntime.missingOrders += 1;
+      await connection.rollback();
+      return;
+    }
 
-  await pool.execute(
-    `UPDATE order_record
-     SET traded_quantity = ?, remaining_quantity = ?, order_status = ?, update_time = NOW()
-     WHERE local_order_id = ?`,
-    [nextTradedQuantity, remainingQuantity, orderStatus, order.local_order_id],
-  );
+    const order = orders[0];
+    const tradeNo = `${report.tradeNo}-${order.local_order_id}`;
+    const [insert] = await connection.execute(
+      `INSERT IGNORE INTO trade_record (
+         trade_no, local_order_id, order_no, stock_code, trade_price,
+         trade_quantity, trade_amount, trade_time
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        tradeNo,
+        order.local_order_id,
+        orderNo,
+        report.stockCode || order.stock_code,
+        tradePrice,
+        tradeQuantity,
+        tradePrice * tradeQuantity,
+        toMysqlDateTime(report.tradeTime),
+      ],
+    );
 
-  await pool.execute(
-    `INSERT INTO trade_record (
-       trade_no, local_order_id, order_no, stock_code, trade_price,
-       trade_quantity, trade_amount, trade_time
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
-     ON DUPLICATE KEY UPDATE trade_no = trade_no`,
-    [
-      tradeNo,
-      order.local_order_id,
-      orderNo,
-      report.stockCode || order.stock_code,
-      tradePrice,
-      tradeQuantity,
-      tradePrice * tradeQuantity,
-    ],
-  );
+    if (insert.affectedRows === 0) {
+      kafkaRuntime.duplicateTrades += 1;
+      await connection.rollback();
+      return;
+    }
+
+    const nextTradedQuantity = Number(order.traded_quantity) + tradeQuantity;
+    if (nextTradedQuantity > Number(order.order_quantity)) {
+      rememberInvalidMessage(
+        TOPICS.tradeReport,
+        `trade quantity exceeds remaining quantity for order ${orderNo}`,
+      );
+      await connection.rollback();
+      return;
+    }
+
+    const remainingQuantity = Number(order.order_quantity) - nextTradedQuantity;
+    const orderStatus = remainingQuantity === 0 ? "TRADED" : "PART_TRADED";
+
+    await connection.execute(
+      `UPDATE order_record
+       SET traded_quantity = ?, remaining_quantity = ?, order_status = ?, update_time = NOW()
+       WHERE local_order_id = ?`,
+      [
+        nextTradedQuantity,
+        remainingQuantity,
+        orderStatus,
+        order.local_order_id,
+      ],
+    );
+
+    await connection.commit();
+    kafkaRuntime.handledTradeReports += 1;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 async function handleOrderReport(report) {
-  const orderNo = report.orderId || report.orderNo;
-  if (!orderNo) return;
+  const error = validateOrderReport(report);
+  if (error) {
+    rememberInvalidMessage(TOPICS.orderReport, error);
+    return;
+  }
 
+  const orderNo = report.orderId || report.orderNo;
   const status =
     STATUS_MAP[report.status] ||
     STATUS_MAP[report.result] ||
     report.status ||
-    report.result ||
-    "SUBMITTED";
+    report.result;
   const rejectReason = report.reason || report.message || null;
 
-  await pool.execute(
+  const [result] = await pool.execute(
     `UPDATE order_record
      SET order_status = ?, reject_reason = ?, update_time = NOW()
      WHERE order_no = ?`,
     [status, rejectReason, orderNo],
   );
+
+  if (result.affectedRows === 0) {
+    kafkaRuntime.missingOrders += 1;
+    return;
+  }
+
+  kafkaRuntime.handledOrderReports += 1;
+}
+
+function validateOrderReport(report) {
+  if (!report || typeof report !== "object")
+    return "order report must be an object";
+  if (!report.orderId && !report.orderNo)
+    return "order report orderId is required";
+  const status = report.status || report.result;
+  if (!status) return "order report status is required";
+  if (!ORDER_REPORT_STATUSES.has(status)) {
+    return `order report status is unsupported: ${status}`;
+  }
+  if (report.timestamp && !isIsoDate(report.timestamp)) {
+    return "order report timestamp must be an ISO 8601 string";
+  }
+  return "";
 }
 
 function getKafkaStatus() {
+  const clientConfig = buildStatusClientConfig();
   return {
     enabled: kafkaEnabled(),
     started: kafkaStarted,
-    error: kafkaStartError,
+    ready:
+      kafkaEnabled() &&
+      kafkaStarted &&
+      kafkaRuntime.producerConnected &&
+      kafkaRuntime.consumerConnected,
+    error: kafkaStartError || kafkaRuntime.lastError,
+    client: clientConfig,
     topics: TOPICS,
+    runtime: { ...kafkaRuntime },
+    quoteCacheSize: stockQuotes.size,
   };
+}
+
+function buildStatusClientConfig() {
+  return {
+    clientId: process.env.KAFKA_CLIENT_ID || "trading-client",
+    brokers: (process.env.KAFKA_BROKERS || "localhost:9092")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+    groupId: process.env.KAFKA_GROUP_ID || "trading-client-group",
+    ssl: boolEnv("KAFKA_SSL"),
+    saslMechanism: process.env.KAFKA_SASL_MECHANISM || "",
+  };
+}
+
+function rememberProduced(topic) {
+  kafkaRuntime.producedMessages += 1;
+  kafkaRuntime.lastProducedAt = new Date().toISOString();
+  kafkaRuntime.lastProducedTopic = topic;
+}
+
+function rememberError(error) {
+  kafkaRuntime.lastErrorAt = new Date().toISOString();
+  kafkaRuntime.lastError = error.message || String(error);
+}
+
+function rememberInvalidMessage(topic, reason) {
+  kafkaRuntime.invalidMessages += 1;
+  kafkaRuntime.lastInvalidMessage = `${topic}: ${reason}`;
+  console.warn(`Invalid Kafka message on ${topic}: ${reason}`);
+}
+
+function validationError(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function assertRequired(value, message) {
+  if (value === undefined || value === null || value === "") {
+    throw validationError(message);
+  }
+}
+
+function assertStockCode(value, message) {
+  if (!isStockCode(value)) throw validationError(message);
+}
+
+function assertOneOf(value, allowed, message) {
+  if (!allowed.has(value)) throw validationError(message);
+}
+
+function assertPositiveNumber(value, message) {
+  if (!isPositiveNumber(value)) throw validationError(message);
+}
+
+function assertPositiveInteger(value, message) {
+  if (!isPositiveInteger(value)) throw validationError(message);
+}
+
+function assertIsoDate(value, message) {
+  if (!isIsoDate(value)) throw validationError(message);
+}
+
+function isStockCode(value) {
+  return /^\d{6}$/.test(String(value || ""));
+}
+
+function isFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number);
+}
+
+function isPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0;
+}
+
+function isPositiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0;
+}
+
+function isIsoDate(value) {
+  if (typeof value !== "string" || !value) return false;
+  return !Number.isNaN(Date.parse(value));
+}
+
+function toMysqlDateTime(value) {
+  if (typeof value === "string" && value.length >= 19 && isIsoDate(value)) {
+    return value.slice(0, 19).replace("T", " ");
+  }
+  return new Date().toISOString().slice(0, 19).replace("T", " ");
 }
 
 module.exports = {
