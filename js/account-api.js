@@ -23,6 +23,7 @@ function normalizeFundAccountLogin(data, accountNo) {
   const account = {
     accountNo: payload.fund_acc_no || accountNo,
     securityAccountNo: payload.sec_acc_no || accountNo,
+    authToken: payload.auth_token || "",
     name: "投资者",
     status: payload.status || "正常",
     availableCash: 0,
@@ -82,13 +83,13 @@ async function fetchFundAccount(accountNo) {
   const result = await requestJson(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.fundAccount,
-    { params: { fund_acc_no: accountNo } },
+    { params: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken } },
   );
   if (!result.ok) return result;
   if (result.data?.code && result.data.code !== 0) {
     return { ok: false, message: result.data.message || "查询资金账户失败" };
   }
-  const payload = result.data.data || result.data.account || result.data;
+  const payload = result.data || result.data.data || result.data.account || result.data;
   return {
     ok: true,
     account: {
@@ -107,18 +108,18 @@ async function fetchSecurityHoldings(accountNo) {
   const result = await requestJson(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.holdings,
-    { params: { sec_acc_no: currentAccount()?.securityAccountNo } },
+    { params: { sec_acc_no: currentAccount()?.securityAccountNo, auth_token: currentAccount()?.authToken } },
   );
   if (!result.ok) return result;
   if (result.data?.code && result.data.code !== 0) {
     return { ok: false, message: result.data.message || "查询证券持仓失败" };
   }
-  const payload = result.data.data || result.data.holdings || result.data;
+  const payload = result.data.holdings || result.data.data || result.data;
   const rows = Array.isArray(payload) ? payload : [];
   return {
     ok: true,
     holdings: rows.map((item) => ({
-      stockCode: item.stockCode,
+      stockCode: item.stock_code,
       quantity: Number(item.quantity ?? 0),
       sellable: Number(item.available_quantity ?? 0),
       cost: Number(item.avg_cost ?? 0),
@@ -138,7 +139,7 @@ async function changePasswordViaAccountSystem(
     API_CONFIG.endpoints.changePassword,
     {
       method: "PUT",
-      body: { fund_acc_no: accountNo, password_type: type, old_password: oldPassword, new_password: newPassword },
+      body: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken, password_type: type, old_password: oldPassword, new_password: newPassword },
     },
   );
 }
