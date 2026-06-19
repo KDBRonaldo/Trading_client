@@ -30,6 +30,15 @@ function currentAccount() {
 }
 
 function getLimits(stock) {
+  const explicitUpper = Number(stock.highLimit ?? stock.limitUp ?? stock.upperLimit);
+  const explicitLower = Number(stock.lowLimit ?? stock.limitDown ?? stock.lowerLimit);
+  if (Number.isFinite(explicitUpper) && Number.isFinite(explicitLower)) {
+    return {
+      upper: Number(explicitUpper.toFixed(2)),
+      lower: Number(explicitLower.toFixed(2)),
+    };
+  }
+
   return {
     upper: Number((stock.prevClose * 1.1).toFixed(2)),
     lower: Number((stock.prevClose * 0.9).toFixed(2)),

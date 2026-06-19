@@ -455,6 +455,39 @@ th {
   gap: 14px;
 }
 
+.market-notice {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #ffc4c1;
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  padding: 24px;
+  background: var(--accent-soft);
+}
+
+.market-notice strong {
+  color: var(--danger);
+  font-size: 28px;
+}
+
+.market-notice span {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.market-notice.pending {
+  border-color: #eeeeee;
+  border-left-color: var(--muted);
+  background: #fafafa;
+}
+
+.market-notice.pending strong {
+  color: var(--text);
+}
+
 .quote-card,
 .alert-item {
   border: 1px solid var(--line);

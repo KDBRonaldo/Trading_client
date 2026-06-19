@@ -6,6 +6,13 @@ async function fetchQuotes(keyword = "") {
       `${API_CONFIG.endpoints.kafkaQuotes}${query}`,
     );
     if (!result.ok) return result;
+    if (result.data.notFound || result.data.ok === false) {
+      return {
+        ok: false,
+        notFound: true,
+        message: result.data.message || "股票不存在",
+      };
+    }
     const payload = result.data.data || result.data.stocks || result.data;
     const stocks = (Array.isArray(payload) ? payload : []).map(
       normalizeStockQuote,
@@ -13,6 +20,7 @@ async function fetchQuotes(keyword = "") {
     if (!stocks.length && result.data.pending) {
       return {
         ok: false,
+        pending: true,
         message: "行情请求已发送，等待中央交易系统返回后再刷新",
       };
     }
@@ -61,6 +69,12 @@ function normalizeStockQuote(item) {
     ),
     sellOne: Number(
       item.sellOne ?? item.askPrice ?? item.latest ?? item.currentPrice ?? 0,
+    ),
+    highLimit: Number(
+      item.highLimit ?? item.limitUp ?? item.upperLimit ?? NaN,
+    ),
+    lowLimit: Number(
+      item.lowLimit ?? item.limitDown ?? item.lowerLimit ?? NaN,
     ),
     status: item.status || item.tradeStatus || "可交易",
     announcement: item.announcement || item.notice || "",

@@ -44,6 +44,8 @@ let consumer;
 let kafkaStarted = false;
 let kafkaStartError = "";
 const stockQuotes = new Map();
+const stockQuoteMisses = new Map();
+const pendingStockQueries = new Map();
 const pendingOrderReports = new Map();
 const pendingTradeReports = new Map();
 
@@ -168,6 +170,8 @@ async function startKafka() {
   try {
     const kafka = new Kafka(buildKafkaClientConfig());
 
+    await ensureKafkaTopics(kafka);
+
     producer = kafka.producer();
     consumer = kafka.consumer({
       groupId: process.env.KAFKA_GROUP_ID || "trading-client-group",
@@ -207,6 +211,23 @@ async function startKafka() {
     rememberError(error);
     console.error("Kafka startup failed:", error);
     return { ok: false, message: error.message };
+  }
+}
+
+async function ensureKafkaTopics(kafka) {
+  const admin = kafka.admin();
+  await admin.connect();
+  try {
+    await admin.createTopics({
+      waitForLeaders: true,
+      topics: Object.values(TOPICS).map((topic) => ({
+        topic,
+        numPartitions: 1,
+        replicationFactor: 1,
+      })),
+    });
+  } finally {
+    await admin.disconnect();
   }
 }
 
@@ -271,6 +292,8 @@ function buildOrderCommand(order) {
     side: order.direction || order.side,
     price: Number(order.price),
     quantity: Number(order.quantity),
+    highLimit: Number(order.highLimit ?? order.limitUp ?? order.upperLimit ?? NaN),
+    lowLimit: Number(order.lowLimit ?? order.limitDown ?? order.lowerLimit ?? NaN),
     timestamp: order.timestamp || new Date().toISOString(),
   };
 
@@ -281,6 +304,8 @@ function buildOrderCommand(order) {
   assertPositiveNumber(value.price, "price must be greater than 0");
   assertPositiveInteger(value.quantity, "quantity must be a positive integer");
   assertIsoDate(value.timestamp, "timestamp must be an ISO 8601 string");
+  if (!Number.isFinite(value.highLimit)) delete value.highLimit;
+  if (!Number.isFinite(value.lowLimit)) delete value.lowLimit;
 
   return value;
 }
@@ -329,6 +354,13 @@ async function publishStockQuery(stockCode) {
       },
     ],
   });
+  if (!pendingStockQueries.has(value.stockCode)) {
+    pendingStockQueries.set(value.stockCode, {
+      stockCode: value.stockCode,
+      queryId: value.queryId,
+      sentAt: Date.now(),
+    });
+  }
   rememberProduced(TOPICS.stockQuery);
   return value;
 }
@@ -349,15 +381,43 @@ function buildStockQuery(stockCode) {
 function handleStockQuote(payload) {
   const rows = Array.isArray(payload) ? payload : payload.stocks || [payload];
   rows.forEach((item) => {
+    if (isStockNotFoundQuote(item)) {
+      const stockCode = String(item.stockCode);
+      stockQuotes.delete(stockCode);
+      stockQuoteMisses.set(stockCode, {
+        stockCode,
+        message: item.message || item.reason || "股票不存在",
+        quoteTime: item.quoteTime || item.timestamp || new Date().toISOString(),
+      });
+      pendingStockQueries.delete(stockCode);
+      kafkaRuntime.handledStockQuotes += 1;
+      return;
+    }
+
     const error = validateStockQuote(item);
     if (error) {
       rememberInvalidMessage(TOPICS.stockQuote, error);
       return;
     }
     const quote = normalizeStockQuote(item);
+    stockQuoteMisses.delete(quote.stockCode);
+    pendingStockQueries.delete(quote.stockCode);
     stockQuotes.set(quote.stockCode, quote);
     kafkaRuntime.handledStockQuotes += 1;
   });
+}
+
+function isStockNotFoundQuote(item) {
+  if (!item || typeof item !== "object" || !isStockCode(item.stockCode)) {
+    return false;
+  }
+  return (
+    item.found === false ||
+    item.exists === false ||
+    item.errorCode === "STOCK_NOT_FOUND" ||
+    item.status === "NOT_FOUND" ||
+    item.tradeStatus === "不存在"
+  );
 }
 
 function validateStockQuote(item) {
@@ -396,6 +456,12 @@ function normalizeStockQuote(item) {
     askPrice: Number(
       item.askPrice ?? item.sellOne ?? item.latestPrice ?? item.latest ?? 0,
     ),
+    highLimit: Number(
+      item.highLimit ?? item.limitUp ?? item.upperLimit ?? NaN,
+    ),
+    lowLimit: Number(
+      item.lowLimit ?? item.limitDown ?? item.lowerLimit ?? NaN,
+    ),
     tradeStatus: item.tradeStatus || item.status || "可交易",
     notice: item.notice || item.announcement || "",
     quoteTime: item.quoteTime || item.timestamp || new Date().toISOString(),
@@ -411,6 +477,31 @@ function getCachedStockQuotes(keyword = "") {
       item.stockCode === query ||
       (item.stockName && item.stockName.includes(query)),
   );
+}
+
+function getStockQuoteMiss(keyword = "") {
+  const query = String(keyword || "").trim();
+  if (!isStockCode(query)) return null;
+  return stockQuoteMisses.get(query) || null;
+}
+
+function consumeTimedOutStockQuery(keyword = "") {
+  const query = String(keyword || "").trim();
+  if (!isStockCode(query)) return null;
+
+  const pending = pendingStockQueries.get(query);
+  if (!pending) return null;
+
+  const timeoutMs = Number(process.env.KAFKA_STOCK_QUERY_TIMEOUT_MS || 8000);
+  if (Date.now() - pending.sentAt < timeoutMs) return null;
+
+  pendingStockQueries.delete(query);
+  return {
+    stockCode: query,
+    message: "股票不存在或中央交易系统未返回行情",
+    sentAt: new Date(pending.sentAt).toISOString(),
+    timeoutMs,
+  };
 }
 
 async function handleTradeReport(report) {
@@ -616,6 +707,8 @@ function getKafkaStatus() {
     topics: TOPICS,
     runtime: { ...kafkaRuntime },
     quoteCacheSize: stockQuotes.size,
+    quoteMissSize: stockQuoteMisses.size,
+    pendingStockQueries: pendingStockQueries.size,
     pendingReports: {
       orderReports: pendingOrderReports.size,
       tradeReportOrders: pendingTradeReports.size,
@@ -760,4 +853,6 @@ module.exports = {
   publishCancelCommand,
   publishStockQuery,
   getCachedStockQuotes,
+  getStockQuoteMiss,
+  consumeTimedOutStockQuery,
 };

@@ -24,12 +24,26 @@ dom.refreshBtn.addEventListener("click", async () => {
   toast("行情与账户数据已刷新");
 });
 
+let marketQueryTimer = null;
+
 dom.marketForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (!validateSession()) return;
-  const result = await fetchQuotes(dom.marketKeyword.value.trim());
+  clearTimeout(marketQueryTimer);
+  await runMarketQuery(dom.marketKeyword.value.trim(), { autoConfirm: true });
+});
+
+async function runMarketQuery(keyword, { autoConfirm = false } = {}) {
+  const result = await fetchQuotes(keyword);
   if (!result.ok) {
-    dom.marketResult.innerHTML = `<p class="form-message error">${result.message}</p>`;
+    if (result.pending && autoConfirm && /^\d{6}$/.test(keyword)) {
+      renderMarketNotice("正在向中央交易系统查询行情...", "pending");
+      marketQueryTimer = setTimeout(() => {
+        runMarketQuery(keyword, { autoConfirm: false });
+      }, 8500);
+      return;
+    }
+    renderMarketNotice(result.notFound ? "股票不存在" : result.message, "error");
     return;
   }
   result.stocks.forEach((stock) => {
@@ -37,7 +51,16 @@ dom.marketForm.addEventListener("submit", async (event) => {
   });
   saveState();
   renderMarket(result.stocks);
-});
+}
+
+function renderMarketNotice(message, type = "error") {
+  dom.marketResult.innerHTML = `
+    <div class="market-notice ${type}">
+      <strong>${message}</strong>
+      <span>${type === "pending" ? "请稍候，系统会自动确认结果" : "请检查股票代码后重新查询"}</span>
+    </div>
+  `;
+}
 
 dom.buyForm.addEventListener("submit", async (event) => {
   event.preventDefault();

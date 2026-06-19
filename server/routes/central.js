@@ -1,7 +1,9 @@
 const express = require("express");
 const pool = require("../db");
 const {
+  consumeTimedOutStockQuery,
   getCachedStockQuotes,
+  getStockQuoteMiss,
   getKafkaStatus,
   publishCancelCommand,
   publishOrderCommand,
@@ -84,11 +86,32 @@ router.post("/stock-queries", async (req, res, next) => {
 router.get("/stocks", async (req, res, next) => {
   try {
     const keyword = String(req.query.keyword || "");
-    if (/^\d{6}$/.test(keyword)) {
+    const stocks = getCachedStockQuotes(keyword);
+    const miss = getStockQuoteMiss(keyword);
+    const timedOut = consumeTimedOutStockQuery(keyword);
+
+    if (/^\d{6}$/.test(keyword) && stocks.length === 0 && miss) {
+      return res.json({
+        ok: false,
+        notFound: true,
+        pending: false,
+        message: miss.message || "股票不存在",
+        data: [],
+      });
+    }
+    if (/^\d{6}$/.test(keyword) && stocks.length === 0 && timedOut) {
+      return res.json({
+        ok: false,
+        notFound: true,
+        pending: false,
+        message: timedOut.message,
+        data: [],
+      });
+    }
+    if (/^\d{6}$/.test(keyword) && stocks.length === 0) {
       await publishStockQuery(keyword);
     }
 
-    const stocks = getCachedStockQuotes(keyword);
     res.json({
       ok: true,
       pending: /^\d{6}$/.test(keyword) && stocks.length === 0,

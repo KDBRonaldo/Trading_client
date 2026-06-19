@@ -33,6 +33,8 @@ Topic：`central.order.command`
   "side": "BUY",
   "price": 1688.35,
   "quantity": 100,
+  "highLimit": 1850.00,
+  "lowLimit": 1520.00,
   "timestamp": "2026-06-15T10:00:00+08:00"
 }
 ```
@@ -47,6 +49,8 @@ Topic：`central.order.command`
 | `side`      | string | 是   | `BUY` 或 `SELL` |
 | `price`     | number | 是   | 委托价格           |
 | `quantity`  | number | 是   | 委托数量           |
+| `highLimit` | number | 否   | 交易客户端页面当前显示的涨停价 |
+| `lowLimit`  | number | 否   | 交易客户端页面当前显示的跌停价 |
 | `timestamp` | string | 是   | 委托发送时间         |
 
 ## 2. 取消指令
@@ -85,6 +89,8 @@ Topic：`client.stock.quote`
   "previousClose": 1662.0,
   "highestPrice": 1696.8,
   "lowestPrice": 1651.2,
+  "highLimit": 1850.00,
+  "lowLimit": 1520.00,
   "bidPrice": 1688.2,
   "askPrice": 1688.5,
   "tradeStatus": "可交易",
@@ -114,6 +120,22 @@ Topic：`client.stock.quote`
   ]
 }
 ```
+
+如果股票代码不存在，也请返回到同一个 topic，并带上明确的不存在标记：
+
+```json
+{
+  "stockCode": "601998",
+  "found": false,
+  "errorCode": "STOCK_NOT_FOUND",
+  "message": "股票不存在",
+  "quoteTime": "2026-06-15T10:02:01+08:00"
+}
+```
+
+交易客户端也兼容 `exists: false`、`status: "NOT_FOUND"` 或 `tradeStatus: "不存在"`，但推荐使用 `found: false` 和 `errorCode: "STOCK_NOT_FOUND"`。
+
+如果中央交易系统对不存在股票不返回任何消息，交易客户端会在 `KAFKA_STOCK_QUERY_TIMEOUT_MS` 后提示“股票不存在或中央交易系统未返回行情”。默认超时时间为 8000ms。
 
 ## 5. 成交反馈
 

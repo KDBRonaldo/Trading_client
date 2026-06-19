@@ -251,6 +251,7 @@ async function submitOrder(form, side) {
 
     const orderSeed = Date.now();
     const orderId = `C${orderSeed}`;
+    const limits = getLimits(input.stock);
     const orderDraft = {
       reviewId: `R${orderSeed}`,
       orderId,
@@ -261,6 +262,8 @@ async function submitOrder(form, side) {
       direction: side === "buy" ? "BUY" : "SELL",
       price: input.orderPrice,
       quantity: input.quantity,
+      highLimit: limits.upper,
+      lowLimit: limits.lower,
       clientTime: new Date().toISOString(),
     };
 

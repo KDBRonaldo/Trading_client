@@ -1,12 +1,13 @@
 const STORAGE_KEY = "stock-trading-client-state";
 const SESSION_LIMIT_MS = 30 * 60 * 1000;
+const storedCentralKafkaEnabled = localStorage.getItem("centralKafkaEnabled");
 
 const API_CONFIG = {
   accountBaseUrl: localStorage.getItem("accountApiBase") || localStorage.getItem("fundAccountApiBase") || "",
   clientBaseUrl: localStorage.getItem("clientApiBase") || "http://localhost:8090",
   managementBaseUrl: localStorage.getItem("managementApiBase") || "",
   centralBaseUrl: localStorage.getItem("centralTradingApiBase") || "",
-  centralKafkaEnabled: localStorage.getItem("centralKafkaEnabled") === "true",
+  centralKafkaEnabled: storedCentralKafkaEnabled === null ? true : storedCentralKafkaEnabled === "true",
   endpoints: {
     login: "/api/external/fund/login",
     fundAccount: "/api/external/fund/snapshot",
