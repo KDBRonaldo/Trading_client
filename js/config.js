@@ -3,7 +3,7 @@ const SESSION_LIMIT_MS = 30 * 60 * 1000;
 
 const API_CONFIG = {
   accountBaseUrl: localStorage.getItem("accountApiBase") || localStorage.getItem("fundAccountApiBase") || "",
-  clientBaseUrl: localStorage.getItem("clientApiBase") || "",
+  clientBaseUrl: localStorage.getItem("clientApiBase") || "http://localhost:8090",
   managementBaseUrl: localStorage.getItem("managementApiBase") || "",
   centralBaseUrl: localStorage.getItem("centralTradingApiBase") || "",
   centralKafkaEnabled: localStorage.getItem("centralKafkaEnabled") === "true",

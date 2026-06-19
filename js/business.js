@@ -1,3 +1,14 @@
+const ORDER_OPEN_STATUSES = ["未成交", "部分成交", "撤单中"];
+const CLIENT_SYNC_INTERVAL_MS = 5000;
+const ALERT_CHECK_INTERVAL_MS = 15000;
+const NOTIFICATION_SYNC_INTERVAL_MS = 15000;
+const backgroundTimers = {
+  orderSync: null,
+  alertCheck: null,
+  notificationSync: null,
+};
+const operationLocks = new Set();
+
 function validateSession() {
   if (!state.session || !state.currentAccount) return false;
   if (Date.now() - state.session.lastActiveAt > SESSION_LIMIT_MS) {
@@ -32,6 +43,7 @@ async function login(accountNo, password) {
     token: authResult.token || sessionResult.sessionId || crypto.randomUUID(),
     lastActiveAt: Date.now(),
   };
+  await restoreClientState({ silent: true });
   saveState();
   return { ok: true, message: firstLogin ? "首次登录证书认证通过" : "登录成功" };
 }
@@ -60,6 +72,7 @@ function ensureLocalAccount(remoteAccount) {
 
 function logout(message = "") {
   if (state.session?.sessionId) updateClientSession(state.session.sessionId, "LOGOUT");
+  stopClientBackgroundJobs();
   state.currentAccount = null;
   state.session = null;
   saveState();
@@ -68,13 +81,70 @@ function logout(message = "") {
   if (message) setMessage(dom.loginMessage, message, "error");
 }
 
-function bootSession() {
+async function bootSession() {
   if (state.session && Date.now() - state.session.lastActiveAt <= SESSION_LIMIT_MS) {
     state.currentAccount = state.session.accountNo;
     showTerminal();
+    await restoreClientState({ silent: true });
+    startClientBackgroundJobs();
   } else {
     logout();
   }
+}
+
+async function restoreClientState({ silent = false } = {}) {
+  const account = currentAccount();
+  if (!account || !API_CONFIG.clientBaseUrl) return;
+
+  const [ordersResult, tradesResult, alertsResult, notificationsResult] =
+    await Promise.all([
+      fetchClientOrders(account),
+      fetchClientTrades(account),
+      fetchClientAlerts(account),
+      fetchClientNotifications(account),
+    ]);
+
+  if (ordersResult.ok && !ordersResult.mock) state.orders = ordersResult.orders;
+  if (tradesResult.ok && !tradesResult.mock) state.trades = tradesResult.trades;
+  if (alertsResult.ok && !alertsResult.mock) state.alerts = alertsResult.alerts;
+  if (notificationsResult.ok && !notificationsResult.mock) {
+    state.notifications = notificationsResult.notifications;
+  }
+
+  const failures = [ordersResult, tradesResult, alertsResult, notificationsResult]
+    .filter((result) => !result.ok);
+  if (failures.length && !silent) {
+    toast(failures[0].message || "交易客户端历史数据恢复失败");
+  }
+
+  saveState();
+  renderAll();
+}
+
+function startClientBackgroundJobs() {
+  stopClientBackgroundJobs();
+  if (!state.session) return;
+
+  backgroundTimers.orderSync = setInterval(() => {
+    syncOpenOrders({ silent: true });
+  }, CLIENT_SYNC_INTERVAL_MS);
+  backgroundTimers.alertCheck = setInterval(() => {
+    refreshAlertMonitor({ silent: true });
+  }, ALERT_CHECK_INTERVAL_MS);
+  backgroundTimers.notificationSync = setInterval(() => {
+    refreshClientNotifications({ silent: true });
+  }, NOTIFICATION_SYNC_INTERVAL_MS);
+
+  syncOpenOrders({ silent: true });
+  refreshAlertMonitor({ silent: true });
+  refreshClientNotifications({ silent: true });
+}
+
+function stopClientBackgroundJobs() {
+  Object.keys(backgroundTimers).forEach((key) => {
+    if (backgroundTimers[key]) clearInterval(backgroundTimers[key]);
+    backgroundTimers[key] = null;
+  });
 }
 
 function searchStocks(keyword) {
@@ -155,117 +225,160 @@ function centralTradingManagesAssets() {
 
 async function submitOrder(form, side) {
   if (!validateSession()) return;
+  const lockKey = `submit:${side}`;
+  if (operationLocks.has(lockKey)) return;
+  operationLocks.add(lockKey);
+  const submitButton = form.querySelector("button[type='submit']");
+  const previousButtonText = submitButton?.textContent;
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "提交中";
+  }
   const message = form.querySelector(".form-message");
-  const account = currentAccount();
-  const pendingStockCode = form.stockCode.value.trim();
-  if ((API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) && /^\d{6}$/.test(pendingStockCode)) {
-    const quoteResult = await fetchQuotes(pendingStockCode);
-    if (quoteResult.ok) {
-      quoteResult.stocks.forEach((stock) => {
-        state.stocks[stock.stockCode] = stock;
-      });
+  try {
+    const account = currentAccount();
+    const pendingStockCode = form.stockCode.value.trim();
+    if ((API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) && /^\d{6}$/.test(pendingStockCode)) {
+      const quoteResult = await fetchQuotes(pendingStockCode);
+      if (quoteResult.ok) {
+        quoteResult.stocks.forEach((stock) => {
+          state.stocks[stock.stockCode] = stock;
+        });
+      }
     }
-  }
-  const input = validateOrderInput(form, side);
-  if (input.error) return setMessage(message, input.error, "error");
+    const input = validateOrderInput(form, side);
+    if (input.error) return setMessage(message, input.error, "error");
 
-  const orderSeed = Date.now();
-  const orderId = `C${orderSeed}`;
-  const orderDraft = {
-    reviewId: `R${orderSeed}`,
-    orderId,
-    orderNo: orderId,
-    fundAccountNo: account.accountNo,
-    securityAccountNo: account.securityAccountNo || account.accountNo,
-    stockCode: input.stockCode,
-    direction: side === "buy" ? "BUY" : "SELL",
-    price: input.orderPrice,
-    quantity: input.quantity,
-    clientTime: new Date().toISOString(),
-  };
+    const orderSeed = Date.now();
+    const orderId = `C${orderSeed}`;
+    const orderDraft = {
+      reviewId: `R${orderSeed}`,
+      orderId,
+      orderNo: orderId,
+      fundAccountNo: account.accountNo,
+      securityAccountNo: account.securityAccountNo || account.accountNo,
+      stockCode: input.stockCode,
+      direction: side === "buy" ? "BUY" : "SELL",
+      price: input.orderPrice,
+      quantity: input.quantity,
+      clientTime: new Date().toISOString(),
+    };
 
-  const review = await reviewOrderByManagement(orderDraft);
-  if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
+    const review = await reviewOrderByManagement(orderDraft);
+    if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
 
-  const centralOwnsAssets = centralTradingManagesAssets();
-  if (side === "buy") {
-    const amount = input.orderPrice * input.quantity;
-    if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
-    const freezeResult = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
-    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
-    if (!centralOwnsAssets) {
-      account.availableCash -= amount;
-      account.frozenCash += amount;
-    }
-  } else {
-    const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
-    if (!holding) return setMessage(message, "您未持有该股票", "error");
-    if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
-    const freezeResult = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
-    if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
-    if (!centralOwnsAssets) holding.sellable -= input.quantity;
-  }
-
-  const centralResult = await submitOrderToCentral(orderDraft);
-  if (!centralResult.ok) {
+    const centralOwnsAssets = centralTradingManagesAssets();
     if (side === "buy") {
       const amount = input.orderPrice * input.quantity;
+      if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
+      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
+      if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
       if (!centralOwnsAssets) {
-        account.availableCash += amount;
-        account.frozenCash -= amount;
-        await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+        account.availableCash -= amount;
+        account.frozenCash += amount;
       }
     } else {
       const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
-      if (!centralOwnsAssets) {
-        if (holding) holding.sellable += input.quantity;
-        await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
-      }
+      if (!holding) return setMessage(message, "您未持有该股票", "error");
+      if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
+      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
+      if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
+      if (!centralOwnsAssets) holding.sellable -= input.quantity;
     }
-    saveState();
-    renderAll();
-    return setMessage(message, centralResult.message || "中央交易系统拒绝委托，冻结资源已释放", "error");
-  }
 
-  const order = {
-    id: centralResult.orderNo,
-    stockCode: input.stockCode,
-    stockName: input.stock.name,
-    side,
-    price: input.orderPrice,
-    quantity: input.quantity,
-    tradedQuantity: 0,
-    remainingQuantity: input.quantity,
-    status: centralResult.status || "未成交",
-    submitTime: nowText(),
-  };
-  const clientOrderResult = await createClientOrder(order, account);
-  if (clientOrderResult.ok && clientOrderResult.localOrderId) {
-    order.localOrderId = clientOrderResult.localOrderId;
-  } else if (!clientOrderResult.ok) {
-    toast(clientOrderResult.message || "委托记录写入交易客户端数据库失败");
+    const centralResult = await submitOrderToCentral(orderDraft);
+    if (!centralResult.ok) {
+      if (side === "buy") {
+        const amount = input.orderPrice * input.quantity;
+        if (!centralOwnsAssets) {
+          account.availableCash += amount;
+          account.frozenCash -= amount;
+          await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+        }
+      } else {
+        const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+        if (!centralOwnsAssets) {
+          if (holding) holding.sellable += input.quantity;
+          await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
+        }
+      }
+      saveState();
+      renderAll();
+      return setMessage(message, centralResult.message || "中央交易系统拒绝委托，冻结资源已释放", "error");
+    }
+
+    const order = {
+      id: centralResult.orderNo,
+      stockCode: input.stockCode,
+      stockName: input.stock.name,
+      side,
+      price: input.orderPrice,
+      quantity: input.quantity,
+      tradedQuantity: 0,
+      remainingQuantity: input.quantity,
+      status: centralResult.status || "未成交",
+      submitTime: nowText(),
+    };
+    const clientOrderResult = await createClientOrder(order, account);
+    if (clientOrderResult.ok && clientOrderResult.localOrderId) {
+      order.localOrderId = clientOrderResult.localOrderId;
+    } else if (!clientOrderResult.ok) {
+      toast(clientOrderResult.message || "委托记录写入交易客户端数据库失败");
+    }
+    state.orders.unshift(order);
+    saveState();
+    form.reset();
+    setMessage(message, `委托已提交，编号 ${order.id}`, "ok");
+    toast("委托已提交");
+    renderAll();
+  } finally {
+    operationLocks.delete(lockKey);
+    if (submitButton) {
+      submitButton.disabled = false;
+      submitButton.textContent = previousButtonText;
+    }
   }
-  state.orders.unshift(order);
-  saveState();
-  form.reset();
-  setMessage(message, `委托已提交，编号 ${order.id}`, "ok");
-  toast("委托已提交");
-  renderAll();
 }
 
 async function cancelOrder(orderId) {
   if (!validateSession()) return;
+  const lockKey = `cancel:${orderId}`;
+  if (operationLocks.has(lockKey)) return;
+  operationLocks.add(lockKey);
   const order = state.orders.find((item) => item.id === orderId);
   if (!order || !["未成交", "部分成交"].includes(order.status)) {
+    operationLocks.delete(lockKey);
     toast("指令已成交或已撤销，无法撤销");
     return;
   }
   const account = currentAccount();
+  const previousStatus = order.status;
+  const previousRemainingQuantity = order.remainingQuantity;
+  order.status = "撤单中";
+  await updateClientOrder(order);
+  saveState();
+  renderAll();
+
   const centralResult = await cancelOrderInCentral(orderId);
   if (!centralResult.ok) {
+    order.status = previousStatus;
+    order.remainingQuantity = previousRemainingQuantity;
+    await updateClientOrder(order);
+    saveState();
+    renderAll();
+    operationLocks.delete(lockKey);
     toast(centralResult.message || "中央交易系统撤销失败");
     return;
   }
+  if (centralTradingManagesAssets()) {
+    const synced = await syncOrderResult(orderId, { silent: true });
+    if (!synced || state.orders.find((item) => item.id === orderId)?.status === "撤单中") {
+      toast("撤单请求已提交，等待中央交易系统回报");
+    }
+    operationLocks.delete(lockKey);
+    return;
+  }
+
   if (!centralTradingManagesAssets()) {
     if (order.side === "buy") {
       const release = order.remainingQuantity * order.price;
@@ -284,17 +397,13 @@ async function cancelOrder(orderId) {
   saveState();
   toast("撤销成功，冻结资源已释放");
   renderAll();
+  operationLocks.delete(lockKey);
 }
 
 async function simulateTrade(orderId) {
   if (!validateSession()) return;
   if (API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) {
-    const result = await fetchOrderResultFromCentral(orderId);
-    if (!result.ok) {
-      toast(result.message || "中央交易系统暂无成交回报");
-      return;
-    }
-    await applyCentralTradeResult(orderId, result.result);
+    await syncOrderResult(orderId, { silent: false });
     return;
   }
   const order = state.orders.find((item) => item.id === orderId);
@@ -341,18 +450,57 @@ async function simulateTrade(orderId) {
   renderAll();
 }
 
-async function applyCentralTradeResult(orderId, result) {
+async function syncOrderResult(orderId, { silent = false } = {}) {
+  const lockKey = `sync:${orderId}`;
+  if (operationLocks.has(lockKey)) return false;
+  operationLocks.add(lockKey);
+  try {
+    const result = await fetchOrderResultFromCentral(orderId);
+    if (!result.ok) {
+      if (!silent) toast(result.message || "中央交易系统暂无成交回报");
+      return false;
+    }
+    return applyCentralTradeResult(orderId, result.result, { silent });
+  } finally {
+    operationLocks.delete(lockKey);
+  }
+}
+
+async function syncOpenOrders({ silent = true } = {}) {
+  if (!state.session || !(API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled))) {
+    return;
+  }
+  const openOrders = state.orders.filter((order) => ORDER_OPEN_STATUSES.includes(order.status));
+  for (const order of openOrders) {
+    await syncOrderResult(order.id, { silent });
+  }
+}
+
+async function applyCentralTradeResult(orderId, result, { silent = false } = {}) {
   const order = state.orders.find((item) => item.id === orderId);
-  if (!order) return;
+  if (!order || !result) return false;
   const account = currentAccount();
   const previousTradedQuantity = Number(order.tradedQuantity || 0);
-  const tradedQuantity = Number(result.tradedQuantity ?? result.filledQuantity ?? result.quantity ?? previousTradedQuantity);
+  const previousStatus = order.status;
+  const previousRemainingQuantity = Number(order.remainingQuantity || 0);
+  const normalizedStatus = result.status ? normalizeOrderStatus(result.status) : "";
+  const tradedQuantity = Number(
+    result.tradedQuantity ??
+      result.filledQuantity ??
+      result.quantity ??
+      (normalizedStatus === "已成交" ? order.quantity : previousTradedQuantity),
+  );
   const tradePrice = Number(result.tradePrice ?? result.price ?? order.price);
   const incrementalQuantity = Math.max(0, tradedQuantity - previousTradedQuantity);
   const amount = incrementalQuantity * tradePrice;
   order.tradedQuantity = tradedQuantity;
-  order.remainingQuantity = Number(result.remainingQuantity ?? Math.max(0, order.quantity - tradedQuantity));
-  order.status = result.status ? normalizeOrderStatus(result.status) : (order.remainingQuantity === 0 ? "已成交" : "部分成交");
+  order.remainingQuantity = Number(
+    result.remainingQuantity ??
+      (["已撤销", "已过期", "已拒绝"].includes(normalizedStatus)
+        ? 0
+        : Math.max(0, order.quantity - tradedQuantity)),
+  );
+  order.status = normalizedStatus || (order.remainingQuantity === 0 ? "已成交" : "部分成交");
 
   if (!centralTradingManagesAssets() && incrementalQuantity > 0 && order.side === "buy") {
     account.frozenCash -= amount;
@@ -373,26 +521,42 @@ async function applyCentralTradeResult(orderId, result) {
   }
 
   if (incrementalQuantity > 0) {
-    const latestTrade = Array.isArray(result.trades) && result.trades.length ? result.trades[result.trades.length - 1] : null;
-    const trade = {
-      id: result.tradeNo || result.tradeId || latestTrade?.tradeNo || `T${Date.now()}`,
-      orderId: order.id,
-      stockCode: order.stockCode,
-      stockName: order.stockName,
-      price: Number(latestTrade?.tradePrice ?? tradePrice),
-      quantity: Number(latestTrade?.tradeQuantity ?? incrementalQuantity),
-      amount: Number(latestTrade?.tradeAmount ?? amount),
-      time: latestTrade?.tradeTime || result.tradeTime || nowText(),
-    };
-    if (!state.trades.some((item) => item.id === trade.id && item.orderId === trade.orderId)) {
-      state.trades.unshift(trade);
-      await createClientTrade(trade, order);
+    const reportTrades = Array.isArray(result.trades) && result.trades.length
+      ? result.trades
+      : [{
+          tradeNo: result.tradeNo || result.tradeId,
+          tradePrice,
+          tradeQuantity: incrementalQuantity,
+          tradeAmount: amount,
+          tradeTime: result.tradeTime,
+        }];
+
+    for (const item of reportTrades) {
+      const trade = {
+        id: item.tradeNo || item.tradeId || `T${Date.now()}${Math.floor(Math.random() * 1000)}`,
+        orderId: order.id,
+        stockCode: item.stockCode || order.stockCode,
+        stockName: order.stockName,
+        price: Number(item.tradePrice ?? tradePrice),
+        quantity: Number(item.tradeQuantity ?? incrementalQuantity),
+        amount: Number(item.tradeAmount ?? Number(item.tradePrice ?? tradePrice) * Number(item.tradeQuantity ?? incrementalQuantity)),
+        time: item.tradeTime || result.tradeTime || nowText(),
+      };
+      if (!state.trades.some((existing) => existing.id === trade.id && existing.orderId === trade.orderId)) {
+        state.trades.unshift(trade);
+        await createClientTrade(trade, order);
+      }
     }
   }
   await updateClientOrder(order);
   saveState();
-  toast("中央交易系统成交回报已同步");
+  const changed =
+    incrementalQuantity > 0 ||
+    previousStatus !== order.status ||
+    previousRemainingQuantity !== Number(order.remainingQuantity || 0);
+  if (changed && !silent) toast("中央交易系统订单回报已同步");
   renderAll();
+  return changed;
 }
 
 async function createAlert(form) {
@@ -432,17 +596,77 @@ async function checkAlerts() {
   for (const alert of state.alerts) {
     if (alert.status !== "启用") continue;
     const stock = state.stocks[alert.stockCode];
+    if (!stock) continue;
     const matched = alert.direction === "ABOVE" ? stock.latest >= alert.price : stock.latest <= alert.price;
     if (matched) {
       alert.status = "已触发";
       alert.triggerTime = nowText();
       const content = `${alert.stockName} 已触发价格提醒`;
       await updateClientAlert(alert, { alertStatus: "TRIGGERED", triggerNow: true });
-      await createClientNotification(alert, content);
+      const notificationResult = await createClientNotification(alert, content);
+      const notification = {
+        id: notificationResult.notificationId ? `N${notificationResult.notificationId}` : `N${Date.now()}`,
+        notificationId: notificationResult.notificationId,
+        alertId: alert.alertId,
+        content,
+        readStatus: "UNREAD",
+        time: nowText(),
+      };
+      if (!state.notifications.some((item) => item.id === notification.id)) {
+        state.notifications.unshift(notification);
+      }
       toast(content);
     }
   }
   saveState();
+}
+
+async function refreshAlertMonitor({ silent = true } = {}) {
+  if (!state.session) return;
+  const activeAlerts = state.alerts.filter((alert) => alert.status === "启用");
+  if (!activeAlerts.length) return;
+
+  const stockCodes = [...new Set(activeAlerts.map((alert) => alert.stockCode))];
+  for (const stockCode of stockCodes) {
+    const quoteResult = await fetchQuotes(stockCode);
+    if (quoteResult.ok) {
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
+    } else if (!silent) {
+      toast(quoteResult.message || "价格提醒行情检查失败");
+    }
+  }
+  await checkAlerts();
+  renderAll();
+}
+
+async function refreshClientNotifications({ silent = true } = {}) {
+  const account = currentAccount();
+  if (!account || !API_CONFIG.clientBaseUrl) return;
+
+  const result = await fetchClientNotifications(account);
+  if (!result.ok) {
+    if (!silent) toast(result.message || "通知刷新失败");
+    return;
+  }
+  if (!result.mock) state.notifications = result.notifications;
+  saveState();
+  renderNotifications();
+}
+
+async function markNotificationRead(notificationId) {
+  const notification = state.notifications.find((item) => String(item.id) === String(notificationId));
+  if (!notification || notification.readStatus === "READ") return;
+
+  const result = await markClientNotificationRead(notification.notificationId);
+  if (!result.ok) {
+    toast(result.message || "通知状态更新失败");
+    return;
+  }
+  notification.readStatus = "READ";
+  saveState();
+  renderNotifications();
 }
 
 async function deleteAlert(alertId) {

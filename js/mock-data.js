@@ -83,5 +83,6 @@ const seedState = {
   orders: [],
   trades: [],
   alerts: [],
+  notifications: [],
   session: null,
 };

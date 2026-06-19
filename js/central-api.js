@@ -78,6 +78,8 @@ function normalizeOrderStatus(status) {
     FILLED: "已成交",
     CANCELED: "已撤销",
     CANCELLED: "已撤销",
+    CANCELING: "撤单中",
+    CANCEL_REQUESTED: "撤单中",
     EXPIRED: "已过期",
     REJECTED: "已拒绝",
   };
@@ -128,7 +130,7 @@ async function cancelOrderInCentral(orderId) {
       message: result.data.message || payload.message || "中央交易系统拒绝撤销",
     };
   }
-  return { ok: true };
+  return { ok: true, status: normalizeOrderStatus(payload.status) };
 }
 
 async function fetchOrderResultFromCentral(orderId) {
@@ -139,7 +141,11 @@ async function fetchOrderResultFromCentral(orderId) {
       { params: { orderId } },
     );
     if (!result.ok) return result;
-    return { ok: true, result: result.data.data || result.data };
+    const payload = result.data.data || result.data;
+    if (result.data.pending || result.data.ok === false || payload.pending) {
+      return { ok: false, pending: true, message: result.data.message || payload.message || "中央交易系统暂无成交回报" };
+    }
+    return { ok: true, result: payload };
   }
   if (!API_CONFIG.centralBaseUrl) return { ok: false, mock: true };
   const result = await requestJson(
@@ -148,7 +154,11 @@ async function fetchOrderResultFromCentral(orderId) {
     { params: { orderId } },
   );
   if (!result.ok) return result;
-  return { ok: true, result: result.data.data || result.data };
+  const payload = result.data.data || result.data;
+  if (result.data.pending || result.data.ok === false || payload.pending) {
+    return { ok: false, pending: true, message: result.data.message || payload.message || "中央交易系统暂无成交回报" };
+  }
+  return { ok: true, result: payload };
 }
 
 async function submitOrderViaKafkaOrMock(orderPayload) {
@@ -206,5 +216,5 @@ async function cancelOrderViaKafkaOrMock(orderId) {
       message: result.data.message || payload.message || "中央交易系统 Kafka 管道拒绝撤单",
     };
   }
-  return { ok: true };
+  return { ok: true, status: normalizeOrderStatus(payload.status) };
 }

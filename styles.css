@@ -497,6 +497,10 @@ th {
   border-left: 3px solid var(--accent);
 }
 
+.notification-unread {
+  background: var(--accent-soft);
+}
+
 .toast {
   position: fixed;
   right: 24px;

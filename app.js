@@ -9,6 +9,7 @@ dom.loginForm.addEventListener("submit", async (event) => {
   if (!result.ok) return setMessage(dom.loginMessage, result.message, "error");
   setMessage(dom.loginMessage, result.message, "ok");
   showTerminal();
+  startClientBackgroundJobs();
 });
 
 dom.logoutBtn.addEventListener("click", () => logout());
@@ -18,6 +19,8 @@ dom.navItems.forEach((item) => item.addEventListener("click", () => setView(item
 dom.refreshBtn.addEventListener("click", async () => {
   if (!validateSession()) return;
   await refreshExternalData({ randomizeMockQuotes: true });
+  await restoreClientState({ silent: true });
+  await syncOpenOrders({ silent: true });
   toast("行情与账户数据已刷新");
 });
 
@@ -61,6 +64,11 @@ dom.alertForm.addEventListener("submit", async (event) => {
 dom.alertRows.addEventListener("click", async (event) => {
   const alertId = event.target.dataset.alertDelete;
   if (alertId) await deleteAlert(alertId);
+});
+
+dom.notificationRows.addEventListener("click", async (event) => {
+  const notificationId = event.target.dataset.notificationRead;
+  if (notificationId) await markNotificationRead(notificationId);
 });
 
 dom.passwordForm.addEventListener("submit", async (event) => {

@@ -11,6 +11,7 @@ function renderAll() {
   renderOrders();
   renderTrades();
   renderAlerts();
+  renderNotifications();
   dom.clockText.textContent = nowText();
   const account = currentAccount();
   dom.sessionAccount.textContent = account ? `${account.name} ${account.accountNo}` : "未登录";
@@ -80,7 +81,11 @@ function renderMarket(stocks) {
 function renderOrders() {
   dom.orderRows.innerHTML = "";
   state.orders.forEach((order) => {
+    const centralMode = API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled);
     const canCancel = ["未成交", "部分成交"].includes(order.status);
+    const canSync = centralMode
+      ? ["未成交", "部分成交", "撤单中"].includes(order.status)
+      : order.status === "未成交";
     const row = document.createElement("tr");
     row.innerHTML = `
       <td>${order.id}</td>
@@ -92,7 +97,7 @@ function renderOrders() {
       <td>${order.remainingQuantity}</td>
       <td>${order.status}</td>
       <td>
-        <button class="secondary-btn" data-fill="${order.id}" ${order.status !== "未成交" ? "disabled" : ""}>${API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled) ? "同步" : "成交"}</button>
+        <button class="secondary-btn" data-fill="${order.id}" ${canSync ? "" : "disabled"}>${centralMode ? "同步" : "成交"}</button>
         <button class="ghost-btn" data-cancel="${order.id}" ${canCancel ? "" : "disabled"}>撤销</button>
       </td>
     `;
@@ -135,6 +140,26 @@ function renderAlerts() {
   });
   if (!state.alerts.length) dom.alertRows.innerHTML = `<p class="hint">暂无价格提醒</p>`;
   dom.alertSummary.textContent = `${state.alerts.length} 条规则`;
+}
+
+function renderNotifications() {
+  if (!dom.notificationRows || !dom.notificationSummary) return;
+  dom.notificationRows.innerHTML = "";
+  state.notifications.forEach((notification) => {
+    const item = document.createElement("article");
+    item.className = `alert-item ${notification.readStatus === "UNREAD" ? "notification-unread" : ""}`.trim();
+    item.innerHTML = `
+      <div>
+        <strong>${notification.readStatus === "UNREAD" ? "未读通知" : "已读通知"}</strong>
+        <p class="hint">${notification.content} · ${notification.time || ""}</p>
+      </div>
+      <button class="ghost-btn" data-notification-read="${notification.id}" ${notification.readStatus === "READ" ? "disabled" : ""}>标为已读</button>
+    `;
+    dom.notificationRows.appendChild(item);
+  });
+  if (!state.notifications.length) dom.notificationRows.innerHTML = `<p class="hint">暂无通知</p>`;
+  const unreadCount = state.notifications.filter((item) => item.readStatus === "UNREAD").length;
+  dom.notificationSummary.textContent = `${unreadCount} 条未读 / ${state.notifications.length} 条通知`;
 }
 
 function setView(viewId) {

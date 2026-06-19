@@ -29,5 +29,7 @@ const dom = {
   alertForm: document.querySelector("#alertForm"),
   alertRows: document.querySelector("#alertRows"),
   alertSummary: document.querySelector("#alertSummary"),
+  notificationRows: document.querySelector("#notificationRows"),
+  notificationSummary: document.querySelector("#notificationSummary"),
   passwordForm: document.querySelector("#passwordForm"),
 };
