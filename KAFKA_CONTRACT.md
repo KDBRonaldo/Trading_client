@@ -12,13 +12,13 @@
 
 ## Topic
 
-| Topic                    | 方向                       | 用途                               |
-| ------------------------ | -------------------------- | ---------------------------------- |
-| `central.order.command`  | 交易客户端 -> 中央交易系统 | 提交买入/卖出委托                  |
-| `central.cancel.command` | 交易客户端 -> 中央交易系统 | 取消委托                           |
-| `central.stock.query`    | 交易客户端 -> 中央交易系统 | 查询股票行情                       |
-| `client.stock.quote`     | 中央交易系统 -> 交易客户端 | 返回股票行情                       |
-| `client.trade.report`    | 中央交易系统 -> 交易客户端 | 返回成交反馈                       |
+| Topic                    | 方向              | 用途                |
+| ------------------------ | --------------- | ----------------- |
+| `central.order.command`  | 交易客户端 -> 中央交易系统 | 提交买入/卖出委托         |
+| `central.cancel.command` | 交易客户端 -> 中央交易系统 | 取消委托              |
+| `central.stock.query`    | 交易客户端 -> 中央交易系统 | 查询股票行情            |
+| `client.stock.quote`     | 中央交易系统 -> 交易客户端 | 返回股票行情            |
+| `client.trade.report`    | 中央交易系统 -> 交易客户端 | 返回成交反馈            |
 | `client.order.report`    | 中央交易系统 -> 交易客户端 | 返回拒绝、过期、撤单等订单状态反馈 |
 
 ## 1. 提交指令
@@ -39,15 +39,15 @@ Topic：`central.order.command`
 
 字段说明：
 
-| 字段        | 类型   | 必填 | 说明                   |
-| ----------- | ------ | ---- | ---------------------- |
-| `accountId` | string | 是   | 资金账户 ID            |
-| `orderId`   | string | 是   | 交易客户端生成的委托号 |
-| `stockCode` | string | 是   | 6 位股票代码           |
-| `side`      | string | 是   | `BUY` 或 `SELL`        |
-| `price`     | number | 是   | 委托价格               |
-| `quantity`  | number | 是   | 委托数量               |
-| `timestamp` | string | 是   | 委托发送时间           |
+| 字段          | 类型     | 必填  | 说明             |
+| ----------- | ------ | --- | -------------- |
+| `accountId` | string | 是   | 资金账户 ID        |
+| `orderId`   | string | 是   | 交易客户端生成的委托号    |
+| `stockCode` | string | 是   | 6 位股票代码        |
+| `side`      | string | 是   | `BUY` 或 `SELL` |
+| `price`     | number | 是   | 委托价格           |
+| `quantity`  | number | 是   | 委托数量           |
+| `timestamp` | string | 是   | 委托发送时间         |
 
 ## 2. 取消指令
 
@@ -159,15 +159,15 @@ Topic：`client.order.report`
 
 状态枚举：
 
-| 状态          | 含义     |
-| ------------- | -------- |
-| `SUBMITTED`   | 已提交   |
-| `ACCEPTED`    | 已受理   |
+| 状态            | 含义   |
+| ------------- | ---- |
+| `SUBMITTED`   | 已提交  |
+| `ACCEPTED`    | 已受理  |
 | `PART_TRADED` | 部分成交 |
 | `TRADED`      | 全部成交 |
-| `CANCELED`    | 已撤单   |
-| `EXPIRED`     | 已过期   |
-| `REJECTED`    | 已拒绝   |
+| `CANCELED`    | 已撤单  |
+| `EXPIRED`     | 已过期  |
+| `REJECTED`    | 已拒绝  |
 
 ## 还需要中央交易系统提供
 

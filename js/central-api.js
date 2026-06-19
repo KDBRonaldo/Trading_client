@@ -78,6 +78,7 @@ function normalizeOrderStatus(status) {
     FILLED: "已成交",
     CANCELED: "已撤销",
     CANCELLED: "已撤销",
+    EXPIRED: "已过期",
     REJECTED: "已拒绝",
   };
   return statusMap[status] || status || "未成交";

@@ -33,12 +33,19 @@ const STATUS_MAP = {
 
 const OUTBOUND_SIDES = new Set(["BUY", "SELL"]);
 const ORDER_REPORT_STATUSES = new Set(Object.keys(STATUS_MAP));
+const SPRING_TYPE_HEADERS = {
+  orderCommand: "com.trading.central.model.OrderCommandMsg",
+  cancelCommand: "com.trading.central.model.CancelCommandMsg",
+  stockQuery: "com.trading.central.model.StockQueryMsg",
+};
 
 let producer;
 let consumer;
 let kafkaStarted = false;
 let kafkaStartError = "";
 const stockQuotes = new Map();
+const pendingOrderReports = new Map();
+const pendingTradeReports = new Map();
 
 const kafkaRuntime = {
   producerConnected: false,
@@ -244,7 +251,13 @@ async function publishOrderCommand(order) {
   requireKafkaReady();
   await producer.send({
     topic: TOPICS.orderCommand,
-    messages: [{ key: value.orderId, value: JSON.stringify(value) }],
+    messages: [
+      {
+        key: value.orderId,
+        value: JSON.stringify(value),
+        headers: buildSpringJsonHeaders(SPRING_TYPE_HEADERS.orderCommand),
+      },
+    ],
   });
   rememberProduced(TOPICS.orderCommand);
   return value;
@@ -277,7 +290,13 @@ async function publishCancelCommand(cancel) {
   requireKafkaReady();
   await producer.send({
     topic: TOPICS.cancelCommand,
-    messages: [{ key: value.orderId, value: JSON.stringify(value) }],
+    messages: [
+      {
+        key: value.orderId,
+        value: JSON.stringify(value),
+        headers: buildSpringJsonHeaders(SPRING_TYPE_HEADERS.cancelCommand),
+      },
+    ],
   });
   rememberProduced(TOPICS.cancelCommand);
   return value;
@@ -302,7 +321,13 @@ async function publishStockQuery(stockCode) {
   requireKafkaReady();
   await producer.send({
     topic: TOPICS.stockQuery,
-    messages: [{ key: value.stockCode, value: JSON.stringify(value) }],
+    messages: [
+      {
+        key: value.stockCode,
+        value: JSON.stringify(value),
+        headers: buildSpringJsonHeaders(SPRING_TYPE_HEADERS.stockQuery),
+      },
+    ],
   });
   rememberProduced(TOPICS.stockQuery);
   return value;
@@ -457,6 +482,7 @@ async function applyTradeReportToOrder(
     );
     if (!orders.length) {
       kafkaRuntime.missingOrders += 1;
+      storePendingTradeReport(orderNo, report);
       await connection.rollback();
       return;
     }
@@ -536,15 +562,23 @@ async function handleOrderReport(report) {
     report.result;
   const rejectReason = report.reason || report.message || null;
 
+  const terminalWithoutRemainder = ["CANCELED", "EXPIRED", "REJECTED"].includes(
+    status,
+  );
   const [result] = await pool.execute(
-    `UPDATE order_record
-     SET order_status = ?, reject_reason = ?, update_time = NOW()
-     WHERE order_no = ?`,
+    terminalWithoutRemainder
+      ? `UPDATE order_record
+         SET order_status = ?, reject_reason = ?, remaining_quantity = 0, update_time = NOW()
+         WHERE order_no = ?`
+      : `UPDATE order_record
+         SET order_status = ?, reject_reason = ?, update_time = NOW()
+         WHERE order_no = ?`,
     [status, rejectReason, orderNo],
   );
 
   if (result.affectedRows === 0) {
     kafkaRuntime.missingOrders += 1;
+    storePendingOrderReport(orderNo, report);
     return;
   }
 
@@ -582,7 +616,31 @@ function getKafkaStatus() {
     topics: TOPICS,
     runtime: { ...kafkaRuntime },
     quoteCacheSize: stockQuotes.size,
+    pendingReports: {
+      orderReports: pendingOrderReports.size,
+      tradeReportOrders: pendingTradeReports.size,
+    },
   };
+}
+
+async function applyPendingKafkaReportsForOrder(orderNo) {
+  if (!orderNo) return;
+
+  const orderReport = pendingOrderReports.get(orderNo);
+  if (orderReport) {
+    pendingOrderReports.delete(orderNo);
+    await handleOrderReport(orderReport);
+  }
+
+  const tradeReports = pendingTradeReports.get(orderNo) || [];
+  if (tradeReports.length) {
+    pendingTradeReports.delete(orderNo);
+    for (const report of tradeReports) {
+      const tradeQuantity = Number(report.tradeQuantity ?? report.quantity);
+      const tradePrice = Number(report.tradePrice ?? report.price);
+      await applyTradeReportToOrder(orderNo, report, tradePrice, tradeQuantity);
+    }
+  }
 }
 
 function buildStatusClientConfig() {
@@ -602,6 +660,21 @@ function rememberProduced(topic) {
   kafkaRuntime.producedMessages += 1;
   kafkaRuntime.lastProducedAt = new Date().toISOString();
   kafkaRuntime.lastProducedTopic = topic;
+}
+
+function storePendingOrderReport(orderNo, report) {
+  pendingOrderReports.set(orderNo, report);
+}
+
+function storePendingTradeReport(orderNo, report) {
+  const reports = pendingTradeReports.get(orderNo) || [];
+  reports.push(report);
+  pendingTradeReports.set(orderNo, reports.slice(-20));
+}
+
+function buildSpringJsonHeaders(typeId) {
+  if (process.env.KAFKA_SPRING_TYPE_HEADERS === "false") return undefined;
+  return { __TypeId__: typeId };
 }
 
 function rememberError(error) {
@@ -680,6 +753,7 @@ function toMysqlDateTime(value) {
 
 module.exports = {
   TOPICS,
+  applyPendingKafkaReportsForOrder,
   getKafkaStatus,
   startKafka,
   publishOrderCommand,

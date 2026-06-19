@@ -92,7 +92,7 @@ function renderOrders() {
       <td>${order.remainingQuantity}</td>
       <td>${order.status}</td>
       <td>
-        <button class="secondary-btn" data-fill="${order.id}" ${order.status !== "未成交" ? "disabled" : ""}>${API_CONFIG.centralBaseUrl ? "同步" : "成交"}</button>
+        <button class="secondary-btn" data-fill="${order.id}" ${order.status !== "未成交" ? "disabled" : ""}>${API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled) ? "同步" : "成交"}</button>
         <button class="ghost-btn" data-cancel="${order.id}" ${canCancel ? "" : "disabled"}>撤销</button>
       </td>
     `;

@@ -1,5 +1,6 @@
 const express = require("express");
 const pool = require("../db");
+const { applyPendingKafkaReportsForOrder } = require("../kafka");
 
 const router = express.Router();
 
@@ -72,6 +73,8 @@ router.post("/", async (req, res, next) => {
         body.rejectReason || null,
       ],
     );
+
+    await applyPendingKafkaReportsForOrder(body.orderNo);
 
     res.status(201).json({
       ok: true,

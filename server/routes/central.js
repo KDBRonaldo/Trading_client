@@ -1,4 +1,5 @@
 const express = require("express");
+const pool = require("../db");
 const {
   getCachedStockQuotes,
   getKafkaStatus,
@@ -99,12 +100,65 @@ router.get("/stocks", async (req, res, next) => {
   }
 });
 
-router.get("/orders/:orderId/result", async (req, res) => {
-  res.status(202).json({
-    ok: false,
-    pending: true,
-    message: "Order results are consumed from Kafka asynchronously. Refresh local orders/trades after the report is received.",
-  });
+router.get("/orders/:orderId/result", async (req, res, next) => {
+  try {
+    const [orders] = await pool.execute(
+      `SELECT order_no, stock_code, order_side, order_price, order_quantity,
+              traded_quantity, remaining_quantity, order_status, reject_reason,
+              submit_time, update_time
+       FROM order_record
+       WHERE order_no = ?
+       LIMIT 1`,
+      [req.params.orderId],
+    );
+
+    if (!orders.length) {
+      return res.status(202).json({
+        ok: false,
+        pending: true,
+        message: "Order has been sent. Waiting for local order record and Kafka reports.",
+      });
+    }
+
+    const order = orders[0];
+    const [trades] = await pool.execute(
+      `SELECT trade_no, stock_code, trade_price, trade_quantity, trade_amount, trade_time
+       FROM trade_record
+       WHERE order_no = ?
+       ORDER BY trade_time, trade_id`,
+      [req.params.orderId],
+    );
+
+    res.json({
+      ok: true,
+      data: {
+        orderId: order.order_no,
+        stockCode: order.stock_code,
+        side: order.order_side,
+        orderPrice: Number(order.order_price),
+        orderQuantity: Number(order.order_quantity),
+        filledQuantity: Number(order.traded_quantity),
+        tradedQuantity: Number(order.traded_quantity),
+        remainingQuantity: Number(order.remaining_quantity),
+        status: order.order_status,
+        reason: order.reject_reason || "",
+        tradePrice: trades.length ? Number(trades[trades.length - 1].trade_price) : null,
+        tradeTime: trades.length ? trades[trades.length - 1].trade_time : null,
+        trades: trades.map((trade) => ({
+          tradeNo: trade.trade_no,
+          stockCode: trade.stock_code,
+          tradePrice: Number(trade.trade_price),
+          tradeQuantity: Number(trade.trade_quantity),
+          tradeAmount: Number(trade.trade_amount),
+          tradeTime: trade.trade_time,
+        })),
+        submitTime: order.submit_time,
+        updateTime: order.update_time,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;

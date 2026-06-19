@@ -121,7 +121,7 @@ async function refreshExternalData({ randomizeMockQuotes = false } = {}) {
   const holdingResult = await fetchSecurityHoldings(account.accountNo);
   if (holdingResult.ok) account.holdings = holdingResult.holdings;
 
-  if (API_CONFIG.centralBaseUrl) {
+  if (API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) {
     const quoteResult = await fetchQuotes();
     if (quoteResult.ok) {
       quoteResult.stocks.forEach((stock) => {
@@ -146,12 +146,19 @@ async function refreshExternalData({ randomizeMockQuotes = false } = {}) {
   renderAll();
 }
 
+function centralTradingManagesAssets() {
+  return Boolean(
+    API_CONFIG.centralBaseUrl ||
+      (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled),
+  );
+}
+
 async function submitOrder(form, side) {
   if (!validateSession()) return;
   const message = form.querySelector(".form-message");
   const account = currentAccount();
   const pendingStockCode = form.stockCode.value.trim();
-  if (API_CONFIG.centralBaseUrl && /^\d{6}$/.test(pendingStockCode)) {
+  if ((API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) && /^\d{6}$/.test(pendingStockCode)) {
     const quoteResult = await fetchQuotes(pendingStockCode);
     if (quoteResult.ok) {
       quoteResult.stocks.forEach((stock) => {
@@ -180,33 +187,40 @@ async function submitOrder(form, side) {
   const review = await reviewOrderByManagement(orderDraft);
   if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
 
+  const centralOwnsAssets = centralTradingManagesAssets();
   if (side === "buy") {
     const amount = input.orderPrice * input.quantity;
     if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
-    const freezeResult = await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
+    const freezeResult = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
     if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
-    account.availableCash -= amount;
-    account.frozenCash += amount;
+    if (!centralOwnsAssets) {
+      account.availableCash -= amount;
+      account.frozenCash += amount;
+    }
   } else {
     const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
     if (!holding) return setMessage(message, "您未持有该股票", "error");
     if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
-    const freezeResult = await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
+    const freezeResult = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
     if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
-    holding.sellable -= input.quantity;
+    if (!centralOwnsAssets) holding.sellable -= input.quantity;
   }
 
   const centralResult = await submitOrderToCentral(orderDraft);
   if (!centralResult.ok) {
     if (side === "buy") {
       const amount = input.orderPrice * input.quantity;
-      account.availableCash += amount;
-      account.frozenCash -= amount;
-      await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+      if (!centralOwnsAssets) {
+        account.availableCash += amount;
+        account.frozenCash -= amount;
+        await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
+      }
     } else {
       const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
-      if (holding) holding.sellable += input.quantity;
-      await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
+      if (!centralOwnsAssets) {
+        if (holding) holding.sellable += input.quantity;
+        await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
+      }
     }
     saveState();
     renderAll();
@@ -252,15 +266,17 @@ async function cancelOrder(orderId) {
     toast(centralResult.message || "中央交易系统撤销失败");
     return;
   }
-  if (order.side === "buy") {
-    const release = order.remainingQuantity * order.price;
-    await releaseFunds(account.accountNo, release, order.id);
-    account.frozenCash -= release;
-    account.availableCash += release;
-  } else {
-    await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, order.id);
-    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
-    if (holding) holding.sellable += order.remainingQuantity;
+  if (!centralTradingManagesAssets()) {
+    if (order.side === "buy") {
+      const release = order.remainingQuantity * order.price;
+      await releaseFunds(account.accountNo, release, order.id);
+      account.frozenCash -= release;
+      account.availableCash += release;
+    } else {
+      await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, order.id);
+      const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+      if (holding) holding.sellable += order.remainingQuantity;
+    }
   }
   order.status = "已撤销";
   order.remainingQuantity = 0;
@@ -272,7 +288,7 @@ async function cancelOrder(orderId) {
 
 async function simulateTrade(orderId) {
   if (!validateSession()) return;
-  if (API_CONFIG.centralBaseUrl) {
+  if (API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) {
     const result = await fetchOrderResultFromCentral(orderId);
     if (!result.ok) {
       toast(result.message || "中央交易系统暂无成交回报");
@@ -329,43 +345,50 @@ async function applyCentralTradeResult(orderId, result) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return;
   const account = currentAccount();
-  const tradedQuantity = Number(result.tradedQuantity ?? result.quantity ?? order.quantity);
+  const previousTradedQuantity = Number(order.tradedQuantity || 0);
+  const tradedQuantity = Number(result.tradedQuantity ?? result.filledQuantity ?? result.quantity ?? previousTradedQuantity);
   const tradePrice = Number(result.tradePrice ?? result.price ?? order.price);
-  const amount = tradedQuantity * tradePrice;
+  const incrementalQuantity = Math.max(0, tradedQuantity - previousTradedQuantity);
+  const amount = incrementalQuantity * tradePrice;
   order.tradedQuantity = tradedQuantity;
-  order.remainingQuantity = Math.max(0, order.quantity - tradedQuantity);
+  order.remainingQuantity = Number(result.remainingQuantity ?? Math.max(0, order.quantity - tradedQuantity));
   order.status = result.status ? normalizeOrderStatus(result.status) : (order.remainingQuantity === 0 ? "已成交" : "部分成交");
 
-  if (order.side === "buy") {
+  if (!centralTradingManagesAssets() && incrementalQuantity > 0 && order.side === "buy") {
     account.frozenCash -= amount;
     const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
     if (holding) {
       const totalCost = holding.cost * holding.quantity + amount;
-      holding.quantity += tradedQuantity;
-      holding.sellable += tradedQuantity;
+      holding.quantity += incrementalQuantity;
+      holding.sellable += incrementalQuantity;
       holding.cost = totalCost / holding.quantity;
     } else {
-      account.holdings.push({ stockCode: order.stockCode, quantity: tradedQuantity, sellable: tradedQuantity, cost: tradePrice });
+      account.holdings.push({ stockCode: order.stockCode, quantity: incrementalQuantity, sellable: incrementalQuantity, cost: tradePrice });
     }
-  } else {
+  } else if (!centralTradingManagesAssets() && incrementalQuantity > 0) {
     account.availableCash += amount;
     const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
-    if (holding) holding.quantity -= tradedQuantity;
+    if (holding) holding.quantity -= incrementalQuantity;
     account.holdings = account.holdings.filter((item) => item.quantity > 0);
   }
 
-  const trade = {
-    id: result.tradeNo || result.tradeId || `T${Date.now()}`,
-    orderId: order.id,
-    stockCode: order.stockCode,
-    stockName: order.stockName,
-    price: tradePrice,
-    quantity: tradedQuantity,
-    amount,
-    time: result.tradeTime || nowText(),
-  };
-  state.trades.unshift(trade);
-  await createClientTrade(trade, order);
+  if (incrementalQuantity > 0) {
+    const latestTrade = Array.isArray(result.trades) && result.trades.length ? result.trades[result.trades.length - 1] : null;
+    const trade = {
+      id: result.tradeNo || result.tradeId || latestTrade?.tradeNo || `T${Date.now()}`,
+      orderId: order.id,
+      stockCode: order.stockCode,
+      stockName: order.stockName,
+      price: Number(latestTrade?.tradePrice ?? tradePrice),
+      quantity: Number(latestTrade?.tradeQuantity ?? incrementalQuantity),
+      amount: Number(latestTrade?.tradeAmount ?? amount),
+      time: latestTrade?.tradeTime || result.tradeTime || nowText(),
+    };
+    if (!state.trades.some((item) => item.id === trade.id && item.orderId === trade.orderId)) {
+      state.trades.unshift(trade);
+      await createClientTrade(trade, order);
+    }
+  }
   await updateClientOrder(order);
   saveState();
   toast("中央交易系统成交回报已同步");
