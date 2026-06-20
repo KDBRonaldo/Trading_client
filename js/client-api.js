@@ -118,6 +118,11 @@ async function fetchClientOrders(account) {
         tradedQuantity: Number(row.traded_quantity || 0),
         remainingQuantity: Number(row.remaining_quantity || 0),
         status: fromClientOrderStatus(row.order_status),
+        rejectReason: row.reject_reason || "",
+        reviewId: row.review_id || "",
+        reviewStatus: row.review_status || "",
+        reviewReason: row.review_reason || "",
+        centralStatus: row.central_status || "",
         submitTime: formatClientTime(row.submit_time),
         updateTime: formatClientTime(row.update_time),
       };
@@ -231,6 +236,10 @@ async function createClientOrder(order, account) {
         frozenAmount: isBuy ? order.remainingQuantity * order.price : 0,
         frozenQuantity: isBuy ? 0 : order.remainingQuantity,
         orderStatus: toClientOrderStatus(order.status),
+        reviewId: order.reviewId || null,
+        reviewStatus: order.reviewStatus || null,
+        reviewReason: order.reviewReason || null,
+        centralStatus: order.centralStatus || null,
       },
     },
   );

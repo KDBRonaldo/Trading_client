@@ -32,9 +32,7 @@
               <input
                 id="tradePassword"
                 type="password"
-                inputmode="numeric"
-                maxlength="6"
-                placeholder="请输入6位密码"
+                placeholder="请输入交易密码"
               />
             </label>
             <button class="primary-btn" type="submit">登录</button>
@@ -227,7 +225,9 @@
                       <th>数量</th>
                       <th>已成交</th>
                       <th>剩余</th>
-                      <th>状态</th>
+                      <th>审核状态</th>
+                      <th>委托状态</th>
+                      <th>处理说明</th>
                       <th>操作</th>
                     </tr>
                   </thead>
@@ -309,28 +309,14 @@
                 </select></label
               >
               <label
-                ><span>原密码</span
-                ><input
-                  name="oldPassword"
-                  type="password"
-                  maxlength="6"
-                  inputmode="numeric"
+                ><span>原密码</span><input name="oldPassword" type="password"
               /></label>
               <label
-                ><span>新密码</span
-                ><input
-                  name="newPassword"
-                  type="password"
-                  maxlength="6"
-                  inputmode="numeric"
+                ><span>新密码</span><input name="newPassword" type="password"
               /></label>
               <label
                 ><span>确认新密码</span
-                ><input
-                  name="confirmPassword"
-                  type="password"
-                  maxlength="6"
-                  inputmode="numeric"
+                ><input name="confirmPassword" type="password"
               /></label>
               <button class="primary-btn" type="submit">保存修改</button>
               <p class="form-message"></p>

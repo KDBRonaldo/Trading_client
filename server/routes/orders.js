@@ -10,6 +10,10 @@ const ORDER_FIELDS = {
   remainingQuantity: "remaining_quantity",
   orderStatus: "order_status",
   rejectReason: "reject_reason",
+  reviewId: "review_id",
+  reviewStatus: "review_status",
+  reviewReason: "review_reason",
+  centralStatus: "central_status",
   updateTime: "update_time",
 };
 
@@ -54,9 +58,13 @@ router.post("/", async (req, res, next) => {
         frozen_quantity,
         order_status,
         reject_reason,
+        review_id,
+        review_status,
+        review_reason,
+        central_status,
         submit_time,
         update_time
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         body.orderNo || null,
         body.fundAccountNo,
@@ -71,6 +79,10 @@ router.post("/", async (req, res, next) => {
         Number(body.frozenQuantity || 0),
         body.orderStatus || "SUBMITTED",
         body.rejectReason || null,
+        body.reviewId || null,
+        body.reviewStatus || null,
+        body.reviewReason || null,
+        body.centralStatus || null,
       ],
     );
 

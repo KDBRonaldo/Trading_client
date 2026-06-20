@@ -203,6 +203,11 @@ select:focus {
   color: var(--loss);
 }
 
+.form-message.pending {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .terminal {
   min-height: 100vh;
   display: grid;

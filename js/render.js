@@ -86,6 +86,14 @@ function renderOrders() {
     const canSync = centralMode
       ? ["未成交", "部分成交", "撤单中"].includes(order.status)
       : order.status === "未成交";
+    const reviewStatus = order.reviewStatus || "历史记录";
+    const detail = [
+      order.reviewReason,
+      order.centralStatus,
+      order.rejectReason ? `中央交易系统原因：${order.rejectReason}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ") || "本次改造前创建，未记录审核信息";
     const row = document.createElement("tr");
     row.innerHTML = `
       <td>${order.id}</td>
@@ -95,7 +103,9 @@ function renderOrders() {
       <td>${order.quantity}</td>
       <td>${order.tradedQuantity}</td>
       <td>${order.remainingQuantity}</td>
+      <td>${reviewStatus}</td>
       <td>${order.status}</td>
+      <td>${detail}</td>
       <td>
         <button class="secondary-btn" data-fill="${order.id}" ${canSync ? "" : "disabled"}>${centralMode ? "同步" : "成交"}</button>
         <button class="ghost-btn" data-cancel="${order.id}" ${canCancel ? "" : "disabled"}>撤销</button>
@@ -103,7 +113,7 @@ function renderOrders() {
     `;
     dom.orderRows.appendChild(row);
   });
-  if (!state.orders.length) dom.orderRows.innerHTML = `<tr><td colspan="9">暂无委托记录</td></tr>`;
+  if (!state.orders.length) dom.orderRows.innerHTML = `<tr><td colspan="11">暂无委托记录</td></tr>`;
 }
 
 function renderTrades() {

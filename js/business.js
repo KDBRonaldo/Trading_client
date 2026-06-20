@@ -8,6 +8,7 @@ const backgroundTimers = {
   notificationSync: null,
 };
 const operationLocks = new Set();
+const manualReviewTimers = new Map();
 
 function validateSession() {
   if (!state.session || !state.currentAccount) return false;
@@ -21,8 +22,8 @@ function validateSession() {
 }
 
 async function login(accountNo, password) {
-  if (!/^\d{16}$/.test(accountNo)) return { ok: false, message: "卡号格式错误，请输入16位数字" };
-  if (!/^\d{6}$/.test(password)) return { ok: false, message: "密码格式错误，请输入6位数字" };
+  if (!/^[A-Za-z0-9]{6,32}$/.test(accountNo)) return { ok: false, message: "账户号格式错误" };
+  if (!password) return { ok: false, message: "请输入交易密码" };
   const authResult = await verifyFundAccount(accountNo, password);
   if (!authResult.ok) return authResult;
 
@@ -73,6 +74,7 @@ function ensureLocalAccount(remoteAccount) {
 function logout(message = "") {
   if (state.session?.sessionId) updateClientSession(state.session.sessionId, "LOGOUT");
   stopClientBackgroundJobs();
+  stopManualReviewPolling();
   state.currentAccount = null;
   state.session = null;
   saveState();
@@ -104,7 +106,34 @@ async function restoreClientState({ silent = false } = {}) {
       fetchClientNotifications(account),
     ]);
 
-  if (ordersResult.ok && !ordersResult.mock) state.orders = ordersResult.orders;
+  if (ordersResult.ok && !ordersResult.mock) {
+    const localOrderMetadata = new Map();
+    state.orders.forEach((order) => {
+      localOrderMetadata.set(order.id, order);
+      if (order.assetRef) localOrderMetadata.set(order.assetRef, order);
+    });
+    const remoteOrderIds = new Set(ordersResult.orders.map((order) => order.id));
+    const mergedOrders = ordersResult.orders.map((remoteOrder) => {
+      const localOrder = localOrderMetadata.get(remoteOrder.id);
+      if (!localOrder) return remoteOrder;
+      return {
+        ...remoteOrder,
+        assetRef: localOrder.assetRef || remoteOrder.assetRef,
+        reviewId: localOrder.reviewId,
+        userName: localOrder.userName,
+        reviewStatus: localOrder.reviewStatus,
+        reviewReason: localOrder.reviewReason,
+        centralStatus: localOrder.centralStatus,
+      };
+    });
+    const pendingLocalReviews = state.orders.filter(
+      (order) =>
+        order.reviewId &&
+        !remoteOrderIds.has(order.id) &&
+        ["正在审核", "人工审核中", "审核通过", "人工审核通过"].includes(order.reviewStatus),
+    );
+    state.orders = [...pendingLocalReviews, ...mergedOrders];
+  }
   if (tradesResult.ok && !tradesResult.mock) state.trades = tradesResult.trades;
   if (alertsResult.ok && !alertsResult.mock) state.alerts = alertsResult.alerts;
   if (notificationsResult.ok && !notificationsResult.mock) {
@@ -138,6 +167,37 @@ function startClientBackgroundJobs() {
   syncOpenOrders({ silent: true });
   refreshAlertMonitor({ silent: true });
   refreshClientNotifications({ silent: true });
+  state.orders.filter((order) => order.reviewStatus === "人工审核中").forEach((order) => startManualReviewPolling(order.id));
+}
+
+function stopManualReviewPolling(orderId) {
+  if (orderId) {
+    const timer = manualReviewTimers.get(orderId);
+    if (timer) clearTimeout(timer);
+    manualReviewTimers.delete(orderId);
+    return;
+  }
+  manualReviewTimers.forEach((timer) => clearTimeout(timer));
+  manualReviewTimers.clear();
+}
+
+function startManualReviewPolling(orderId) {
+  if (manualReviewTimers.has(orderId)) return;
+  const poll = async () => {
+    const order = state.orders.find((item) => item.id === orderId);
+    if (!order || order.reviewStatus !== "人工审核中" || !order.reviewId) return stopManualReviewPolling(orderId);
+    const result = await fetchManagementReviewResult(order.reviewId);
+    if (result.ok && result.reviewStatus !== "PENDING_MANUAL") {
+      stopManualReviewPolling(orderId);
+      await applyManualReviewResult(order, result);
+      return;
+    }
+    if (!result.ok) order.reviewReason = `等待人工审核结果：${result.message || "查询失败，将自动重试"}`;
+    saveState();
+    renderAll();
+    manualReviewTimers.set(orderId, setTimeout(poll, 4000));
+  };
+  manualReviewTimers.set(orderId, setTimeout(poll, 4000));
 }
 
 function stopClientBackgroundJobs() {
@@ -218,9 +278,24 @@ async function refreshExternalData({ randomizeMockQuotes = false } = {}) {
 
 function centralTradingManagesAssets() {
   return Boolean(
-    API_CONFIG.centralBaseUrl ||
-      (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled),
+    !API_CONFIG.accountBaseUrl &&
+      (API_CONFIG.centralBaseUrl ||
+        (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)),
   );
+}
+
+async function persistOrderReview(order, account) {
+  if (!API_CONFIG.clientBaseUrl) return { ok: true, mock: true };
+  const auditFields = {
+    reviewId: order.reviewId || null,
+    reviewStatus: order.reviewStatus || null,
+    reviewReason: order.reviewReason || null,
+    centralStatus: order.centralStatus || null,
+  };
+  if (order.localOrderId) return updateClientOrder(order, auditFields);
+  const result = await createClientOrder(order, account);
+  if (result.ok && result.localOrderId) order.localOrderId = result.localOrderId;
+  return result;
 }
 
 async function submitOrder(form, side) {
@@ -240,11 +315,15 @@ async function submitOrder(form, side) {
     const pendingStockCode = form.stockCode.value.trim();
     if ((API_CONFIG.centralBaseUrl || (API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled)) && /^\d{6}$/.test(pendingStockCode)) {
       const quoteResult = await fetchQuotes(pendingStockCode);
-      if (quoteResult.ok) {
-        quoteResult.stocks.forEach((stock) => {
-          state.stocks[stock.stockCode] = stock;
-        });
+      if (!quoteResult.ok) {
+        const fallback = quoteResult.pending
+          ? "正在等待中央交易系统返回最新行情，请稍后再次提交"
+          : "无法获取中央交易系统最新行情，已阻止委托提交";
+        return setMessage(message, quoteResult.message || fallback, "error");
       }
+      quoteResult.stocks.forEach((stock) => {
+        state.stocks[stock.stockCode] = stock;
+      });
     }
     const input = validateOrderInput(form, side);
     if (input.error) return setMessage(message, input.error, "error");
@@ -258,7 +337,9 @@ async function submitOrder(form, side) {
       orderNo: orderId,
       fundAccountNo: account.accountNo,
       securityAccountNo: account.securityAccountNo || account.accountNo,
+      userName: account.name || "",
       stockCode: input.stockCode,
+      stockName: input.stock.name || "",
       direction: side === "buy" ? "BUY" : "SELL",
       price: input.orderPrice,
       quantity: input.quantity,
@@ -266,52 +347,13 @@ async function submitOrder(form, side) {
       lowLimit: limits.lower,
       clientTime: new Date().toISOString(),
     };
-
-    const review = await reviewOrderByManagement(orderDraft);
-    if (!review.ok || !review.approved) return setMessage(message, review.message || "交易管理系统审查未通过", "error");
-
-    const centralOwnsAssets = centralTradingManagesAssets();
-    if (side === "buy") {
-      const amount = input.orderPrice * input.quantity;
-      if (amount > account.availableCash) return setMessage(message, "购买金额超出可用资金", "error");
-      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, `LOCAL-${Date.now()}`);
-      if (!freezeResult.ok) return setMessage(message, freezeResult.message || "资金冻结失败", "error");
-      if (!centralOwnsAssets) {
-        account.availableCash -= amount;
-        account.frozenCash += amount;
-      }
-    } else {
-      const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
-      if (!holding) return setMessage(message, "您未持有该股票", "error");
-      if (input.quantity > holding.sellable) return setMessage(message, "出售数量超过可卖股数", "error");
-      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, input.stockCode, input.quantity, `LOCAL-${Date.now()}`);
-      if (!freezeResult.ok) return setMessage(message, freezeResult.message || "股票冻结失败", "error");
-      if (!centralOwnsAssets) holding.sellable -= input.quantity;
-    }
-
-    const centralResult = await submitOrderToCentral(orderDraft);
-    if (!centralResult.ok) {
-      if (side === "buy") {
-        const amount = input.orderPrice * input.quantity;
-        if (!centralOwnsAssets) {
-          account.availableCash += amount;
-          account.frozenCash -= amount;
-          await releaseFunds(account.accountNo, amount, "CENTRAL_REJECT");
-        }
-      } else {
-        const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
-        if (!centralOwnsAssets) {
-          if (holding) holding.sellable += input.quantity;
-          await releaseHolding(account.accountNo, input.stockCode, input.quantity, "CENTRAL_REJECT");
-        }
-      }
-      saveState();
-      renderAll();
-      return setMessage(message, centralResult.message || "中央交易系统拒绝委托，冻结资源已释放", "error");
-    }
-
     const order = {
-      id: centralResult.orderNo,
+      id: orderId,
+      assetRef: orderId,
+      reviewId: orderDraft.reviewId,
+      fundAccountNo: orderDraft.fundAccountNo,
+      securityAccountNo: orderDraft.securityAccountNo,
+      userName: orderDraft.userName,
       stockCode: input.stockCode,
       stockName: input.stock.name,
       side,
@@ -319,20 +361,147 @@ async function submitOrder(form, side) {
       quantity: input.quantity,
       tradedQuantity: 0,
       remainingQuantity: input.quantity,
-      status: centralResult.status || "未成交",
+      status: "审核中",
+      reviewStatus: "正在审核",
+      reviewReason: "已发送至交易管理系统，等待审核结果",
+      centralStatus: "尚未发送",
       submitTime: nowText(),
     };
-    const clientOrderResult = await createClientOrder(order, account);
-    if (clientOrderResult.ok && clientOrderResult.localOrderId) {
-      order.localOrderId = clientOrderResult.localOrderId;
-    } else if (!clientOrderResult.ok) {
+    state.orders.unshift(order);
+    await persistOrderReview(order, account);
+    saveState();
+    renderAll();
+
+    setMessage(message, "正在等待交易管理系统审核，请稍候…", "pending");
+    const review = await reviewOrderByManagement(orderDraft);
+    if (!review.ok) {
+      order.reviewStatus = "审核失败";
+      order.reviewReason = review.message || "未收到审核结果";
+      order.status = "审核失败";
+      await persistOrderReview(order, account);
+      saveState();
+      renderAll();
+      return setMessage(message, `交易管理系统审核失败：${review.message || "未收到审核结果"}`, "error");
+    }
+    if (!review.approved) {
+      const prefix = review.reviewStatus === "PENDING_MANUAL" ? "审核暂缓，等待人工审核" : "审核不通过";
+      const code = review.rejectCode ? `（${review.rejectCode}）` : "";
+      order.reviewStatus = review.reviewStatus === "PENDING_MANUAL" ? "人工审核中" : "审核不通过";
+      order.reviewReason = `${code}${review.message || "交易管理系统未说明原因"}`;
+      order.status = review.reviewStatus === "PENDING_MANUAL" ? "审核暂缓" : "审核拒绝";
+      await persistOrderReview(order, account);
+      saveState();
+      renderAll();
+      if (review.reviewStatus === "PENDING_MANUAL") startManualReviewPolling(order.id);
+      return setMessage(message, `${prefix}${code}：${review.message || "交易管理系统未说明原因"}`, "error");
+    }
+
+    order.reviewStatus = "审核通过";
+    order.reviewReason = `风险等级：${review.riskLevel || "LOW"}`;
+    order.centralStatus = "准备发送";
+    await persistOrderReview(order, account);
+    renderAll();
+
+    const centralOwnsAssets = centralTradingManagesAssets();
+    if (side === "buy") {
+      const amount = input.orderPrice * input.quantity;
+      if (amount > account.availableCash) {
+        order.status = "资金不足";
+        order.centralStatus = "未发送";
+        order.reviewReason = "审核通过，但购买金额超过可用资金";
+        saveState();
+        renderAll();
+        return setMessage(message, "购买金额超出可用资金", "error");
+      }
+      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, orderId);
+      if (!freezeResult.ok) {
+        order.status = "资金冻结失败";
+        order.centralStatus = "未发送";
+        order.reviewReason = `审核通过，但${freezeResult.message || "资金冻结失败"}`;
+        saveState();
+        renderAll();
+        return setMessage(message, freezeResult.message || "资金冻结失败", "error");
+      }
+      if (!centralOwnsAssets) {
+        account.availableCash -= amount;
+        account.frozenCash += amount;
+      }
+    } else {
+      const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+      if (!holding) {
+        order.status = "持仓不足";
+        order.centralStatus = "未发送";
+        order.reviewReason = "审核通过，但未持有该股票";
+        saveState();
+        renderAll();
+        return setMessage(message, "您未持有该股票", "error");
+      }
+      if (input.quantity > holding.sellable) {
+        order.status = "持仓不足";
+        order.centralStatus = "未发送";
+        order.reviewReason = "审核通过，但出售数量超过可卖股数";
+        saveState();
+        renderAll();
+        return setMessage(message, "出售数量超过可卖股数", "error");
+      }
+      const freezeResult = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, input.stockCode, input.quantity, orderId);
+      if (!freezeResult.ok) {
+        order.status = "股票冻结失败";
+        order.centralStatus = "未发送";
+        order.reviewReason = `审核通过，但${freezeResult.message || "股票冻结失败"}`;
+        saveState();
+        renderAll();
+        return setMessage(message, freezeResult.message || "股票冻结失败", "error");
+      }
+      if (!centralOwnsAssets) holding.sellable -= input.quantity;
+    }
+
+    const centralChannel = API_CONFIG.centralBaseUrl
+      ? "中央交易系统"
+      : API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled
+        ? "中央交易系统（Kafka）"
+        : "中央交易系统模拟通道";
+    order.centralStatus = `正在发送至${centralChannel}`;
+    saveState();
+    renderAll();
+    setMessage(message, "审核已通过，正在发送中央交易系统…", "pending");
+    const centralResult = await submitOrderToCentral(orderDraft);
+    if (!centralResult.ok) {
+      if (side === "buy") {
+        const amount = input.orderPrice * input.quantity;
+        if (!centralOwnsAssets) {
+          account.availableCash += amount;
+          account.frozenCash -= amount;
+          await releaseFunds(account.accountNo, amount, `${orderId}:REJECT`);
+        }
+      } else {
+        const holding = account.holdings.find((item) => item.stockCode === input.stockCode);
+        if (!centralOwnsAssets) {
+          if (holding) holding.sellable += input.quantity;
+          await releaseHolding(account.accountNo, input.stockCode, input.quantity, `${orderId}:REJECT`);
+        }
+      }
+      saveState();
+      order.status = "中央提交失败";
+      order.centralStatus = "中央交易系统未接受";
+      order.reviewReason = centralResult.message || "冻结资源已释放";
+      saveState();
+      renderAll();
+      return setMessage(message, `审核已通过，但中央交易系统未接受：${centralResult.message || "冻结资源已释放"}`, "error");
+    }
+
+    order.id = centralResult.orderNo;
+    order.status = centralResult.status || "未成交";
+    order.centralStatus = `已发送至${centralChannel}`;
+    order.reviewReason = `审核通过；中央状态：${order.status}`;
+    const clientOrderResult = await persistOrderReview(order, account);
+    if (!clientOrderResult.ok) {
       toast(clientOrderResult.message || "委托记录写入交易客户端数据库失败");
     }
-    state.orders.unshift(order);
     saveState();
     form.reset();
-    setMessage(message, `委托已提交，编号 ${order.id}`, "ok");
-    toast("委托已提交");
+    setMessage(message, `审核已通过，已发送至${centralChannel}，委托编号 ${order.id}`, "ok");
+    toast(`审核已通过，已发送至${centralChannel}`);
     renderAll();
   } finally {
     operationLocks.delete(lockKey);
@@ -341,6 +510,93 @@ async function submitOrder(form, side) {
       submitButton.textContent = previousButtonText;
     }
   }
+}
+
+async function applyManualReviewResult(order, result) {
+  const account = currentAccount();
+  if (!account) return;
+  if (!result.approved || result.reviewStatus !== "MANUAL_APPROVED") {
+    order.reviewStatus = "人工审核拒绝";
+    order.status = "审核拒绝";
+    order.reviewReason = `${result.rejectCode ? `（${result.rejectCode}）` : ""}${result.message || "人工审核未通过"}`;
+    order.centralStatus = "未发送";
+    await persistOrderReview(order, account);
+    saveState();
+    renderAll();
+    toast(`人工审核未通过：${result.message || "未说明原因"}`);
+    return;
+  }
+
+  order.reviewStatus = "人工审核通过";
+  order.reviewReason = result.message || "人工审核通过";
+  order.status = "准备提交";
+  const amount = Number(order.price) * Number(order.quantity);
+  const centralOwnsAssets = centralTradingManagesAssets();
+
+  if (order.side === "buy") {
+    if (amount > account.availableCash) {
+      order.status = "资金不足";
+      order.centralStatus = "未发送";
+      order.reviewReason = "人工审核通过，但购买金额超过可用资金";
+      saveState(); renderAll(); return;
+    }
+    const frozen = centralOwnsAssets ? { ok: true } : await freezeFunds(account.accountNo, amount, order.assetRef);
+    if (!frozen.ok) {
+      order.status = "资金冻结失败";
+      order.centralStatus = "未发送";
+      order.reviewReason = frozen.message || "人工审核通过后资金冻结失败";
+      saveState(); renderAll(); return;
+    }
+    if (!centralOwnsAssets) { account.availableCash -= amount; account.frozenCash += amount; }
+  } else {
+    const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
+    if (!holding || Number(order.quantity) > Number(holding.sellable)) {
+      order.status = "持仓不足";
+      order.centralStatus = "未发送";
+      order.reviewReason = "人工审核通过，但可卖持仓不足";
+      saveState(); renderAll(); return;
+    }
+    const frozen = centralOwnsAssets ? { ok: true } : await freezeHolding(account.accountNo, order.stockCode, order.quantity, order.assetRef);
+    if (!frozen.ok) {
+      order.status = "股票冻结失败";
+      order.centralStatus = "未发送";
+      order.reviewReason = frozen.message || "人工审核通过后股票冻结失败";
+      saveState(); renderAll(); return;
+    }
+    if (!centralOwnsAssets) holding.sellable -= Number(order.quantity);
+  }
+
+  const centralChannel = API_CONFIG.centralBaseUrl ? "中央交易系统" : API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled ? "中央交易系统（Kafka）" : "中央交易系统模拟通道";
+  order.centralStatus = `正在发送至${centralChannel}`;
+  saveState(); renderAll();
+  const centralResult = await submitOrderToCentral({
+    reviewId: order.reviewId,
+    orderId: order.assetRef,
+    orderNo: order.assetRef,
+    fundAccountNo: order.fundAccountNo || account.accountNo,
+    securityAccountNo: order.securityAccountNo || account.securityAccountNo || account.accountNo,
+    userName: order.userName || account.name || "",
+    stockCode: order.stockCode,
+    stockName: order.stockName,
+    direction: order.side === "buy" ? "BUY" : "SELL",
+    price: order.price,
+    quantity: order.quantity,
+    clientTime: new Date().toISOString(),
+  });
+  if (!centralResult.ok) {
+    order.status = "中央提交失败";
+    order.centralStatus = "中央交易系统未接受";
+    order.reviewReason = centralResult.message || "人工审核通过后中央提交失败";
+    saveState(); renderAll(); toast(order.reviewReason); return;
+  }
+  order.id = centralResult.orderNo;
+  order.status = centralResult.status || "未成交";
+  order.centralStatus = `已发送至${centralChannel}`;
+  order.reviewReason = `人工审核通过；中央状态：${order.status}`;
+  await persistOrderReview(order, account);
+  saveState();
+  renderAll();
+  toast(`人工审核通过，已发送至${centralChannel}`);
 }
 
 async function cancelOrder(orderId) {
@@ -383,13 +639,24 @@ async function cancelOrder(orderId) {
   }
 
   if (!centralTradingManagesAssets()) {
+    let releaseResult;
     if (order.side === "buy") {
       const release = order.remainingQuantity * order.price;
-      await releaseFunds(account.accountNo, release, order.id);
+      releaseResult = await releaseFunds(account.accountNo, release, `${order.assetRef || order.id}:CANCEL`);
+      if (!releaseResult.ok) {
+        operationLocks.delete(lockKey);
+        toast(releaseResult.message || "资金账户解冻失败，订单状态等待同步");
+        return;
+      }
       account.frozenCash -= release;
       account.availableCash += release;
     } else {
-      await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, order.id);
+      releaseResult = await releaseHolding(account.accountNo, order.stockCode, order.remainingQuantity, `${order.assetRef || order.id}:CANCEL`);
+      if (!releaseResult.ok) {
+        operationLocks.delete(lockKey);
+        toast(releaseResult.message || "证券账户解冻失败，订单状态等待同步");
+        return;
+      }
       const holding = account.holdings.find((item) => item.stockCode === order.stockCode);
       if (holding) holding.sellable += order.remainingQuantity;
     }
@@ -496,13 +763,47 @@ async function applyCentralTradeResult(orderId, result, { silent = false } = {})
   const tradePrice = Number(result.tradePrice ?? result.price ?? order.price);
   const incrementalQuantity = Math.max(0, tradedQuantity - previousTradedQuantity);
   const amount = incrementalQuantity * tradePrice;
-  order.tradedQuantity = tradedQuantity;
-  order.remainingQuantity = Number(
+  const nextRemainingQuantity = Number(
     result.remainingQuantity ??
       (["已撤销", "已过期", "已拒绝"].includes(normalizedStatus)
         ? 0
         : Math.max(0, order.quantity - tradedQuantity)),
   );
+  const assetRef = order.assetRef || order.id;
+
+  if (!centralTradingManagesAssets() && incrementalQuantity > 0) {
+    const settlementRef = `${assetRef}:FILL:${tradedQuantity}`;
+    const settlement = order.side === "buy"
+      ? await debitFunds(account.accountNo, amount, settlementRef)
+      : await deductHolding(account.accountNo, order.stockCode, order.stockName, incrementalQuantity, tradePrice, settlementRef);
+    if (!settlement.ok) {
+      if (!silent) toast(settlement.message || "账户系统成交清算失败");
+      return false;
+    }
+    const counterpart = order.side === "buy"
+      ? await addHolding(account.accountNo, order.stockCode, order.stockName, incrementalQuantity, tradePrice, settlementRef)
+      : await creditFunds(account.accountNo, amount, settlementRef);
+    if (!counterpart.ok) {
+      if (!silent) toast(counterpart.message || "账户系统成交清算失败");
+      return false;
+    }
+  }
+
+  if (!centralTradingManagesAssets() && ["已撤销", "已过期", "已拒绝"].includes(normalizedStatus)) {
+    const releaseQuantity = Math.max(0, order.quantity - tradedQuantity);
+    if (releaseQuantity > 0 && previousStatus !== normalizedStatus) {
+      const release = order.side === "buy"
+        ? await releaseFunds(account.accountNo, releaseQuantity * order.price, `${assetRef}:CANCEL`)
+        : await releaseHolding(account.accountNo, order.stockCode, releaseQuantity, `${assetRef}:CANCEL`);
+      if (!release.ok) {
+        if (!silent) toast(release.message || "账户系统撤单解冻失败");
+        return false;
+      }
+    }
+  }
+
+  order.tradedQuantity = tradedQuantity;
+  order.remainingQuantity = nextRemainingQuantity;
   order.status = normalizedStatus || (order.remainingQuantity === 0 ? "已成交" : "部分成交");
 
   if (!centralTradingManagesAssets() && incrementalQuantity > 0 && order.side === "buy") {
@@ -692,9 +993,7 @@ async function changePassword(form) {
   const newPassword = form.newPassword.value.trim();
   const confirmPassword = form.confirmPassword.value.trim();
   const key = type === "trade" ? "tradePassword" : "withdrawPassword";
-  if (oldPassword !== account[key]) return setMessage(message, "原密码错误，请重新输入", "error");
-  if (!/^\d{6}$/.test(newPassword) || /^(\d)\1{5}$/.test(newPassword)) return setMessage(message, "密码格式不符合要求", "error");
-  if (newPassword === oldPassword) return setMessage(message, "新密码不能与原密码相同", "error");
+  if (!oldPassword || !newPassword) return setMessage(message, "请输入原密码和新密码", "error");
   if (newPassword !== confirmPassword) return setMessage(message, "两次输入的密码不一致，请重新输入", "error");
   const result = await changePasswordViaAccountSystem(account.accountNo, type, oldPassword, newPassword);
   if (!result.ok) return setMessage(message, result.message || "资金账户系统修改密码失败", "error");

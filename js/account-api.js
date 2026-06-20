@@ -24,14 +24,38 @@ function normalizeFundAccountLogin(data, accountNo) {
     accountNo: payload.fund_acc_no || accountNo,
     securityAccountNo: payload.sec_acc_no || accountNo,
     authToken: payload.auth_token || "",
-    name: "投资者",
-    status: payload.status || "正常",
+    name: payload.investorName || payload.investor_name || payload.userName || payload.user_name || "投资者",
+    status: normalizeAccountStatus(payload.status),
     availableCash: 0,
     frozenCash: 0,
     firstLoginDone: true,
     securityAccountLinked: !!payload.sec_acc_no,
   };
   return { ok: true, account };
+}
+
+function accountPayload(data) {
+  return data?.data || data?.account || data || {};
+}
+
+function normalizeAccountStatus(status) {
+  const statusMap = {
+    NORMAL: "正常",
+    LOSS_FROZEN: "挂失冻结",
+    VIOLATION_FROZEN: "违规冻结",
+    NO_FUND_FROZEN: "无资金账户冻结",
+    PRE_CLOSE: "预销户",
+    CLOSED: "已销户",
+  };
+  return statusMap[status] || status || "正常";
+}
+
+function accountSystemResult(result, fallbackMessage) {
+  if (!result.ok) return result;
+  if (result.data?.code !== undefined && Number(result.data.code) !== 0) {
+    return { ok: false, message: result.data.message || fallbackMessage };
+  }
+  return { ok: true, data: accountPayload(result.data) };
 }
 
 function verifyFundAccountMock(accountNo, password) {
@@ -85,18 +109,16 @@ async function fetchFundAccount(accountNo) {
     API_CONFIG.endpoints.fundAccount,
     { params: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken } },
   );
-  if (!result.ok) return result;
-  if (result.data?.code && result.data.code !== 0) {
-    return { ok: false, message: result.data.message || "查询资金账户失败" };
-  }
-  const payload = result.data || result.data.data || result.data.account || result.data;
+  const accountResult = accountSystemResult(result, "查询资金账户失败");
+  if (!accountResult.ok) return accountResult;
+  const payload = accountResult.data;
   return {
     ok: true,
     account: {
       accountNo,
       availableCash: Number(payload.available_balance ?? 0),
       frozenCash: Number(payload.frozen_balance ?? 0),
-      status: payload.status || "正常",
+      status: normalizeAccountStatus(payload.status),
     },
   };
 }
@@ -110,12 +132,10 @@ async function fetchSecurityHoldings(accountNo) {
     API_CONFIG.endpoints.holdings,
     { params: { sec_acc_no: currentAccount()?.securityAccountNo, auth_token: currentAccount()?.authToken } },
   );
-  if (!result.ok) return result;
-  if (result.data?.code && result.data.code !== 0) {
-    return { ok: false, message: result.data.message || "查询证券持仓失败" };
-  }
-  const payload = result.data.holdings || result.data.data || result.data;
-  const rows = Array.isArray(payload) ? payload : [];
+  const accountResult = accountSystemResult(result, "查询证券持仓失败");
+  if (!accountResult.ok) return accountResult;
+  const payload = accountResult.data;
+  const rows = Array.isArray(payload) ? payload : Array.isArray(payload.holdings) ? payload.holdings : [];
   return {
     ok: true,
     holdings: rows.map((item) => ({
@@ -134,7 +154,7 @@ async function changePasswordViaAccountSystem(
   newPassword,
 ) {
   if (!API_CONFIG.accountBaseUrl) return { ok: true };
-  return requestJson(
+  const result = await requestJson(
     API_CONFIG.accountBaseUrl,
     API_CONFIG.endpoints.changePassword,
     {
@@ -142,18 +162,69 @@ async function changePasswordViaAccountSystem(
       body: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken, password_type: type, old_password: oldPassword, new_password: newPassword },
     },
   );
+  return accountSystemResult(result, "资金账户系统修改密码失败");
 }
 
-// 当前版本冻结/释放已移交中央交易系统，保留空函数供 business.js 本地流程使用
+async function updateFundBalance(accountNo, amount, orderRef, txnType) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  const result = await requestJson(
+    API_CONFIG.accountBaseUrl,
+    API_CONFIG.endpoints.fundBalanceChange,
+    {
+      method: "POST",
+      body: {
+        fund_acc_no: accountNo,
+        ref_order_id: orderRef,
+        txn_type: txnType,
+        amount,
+      },
+    },
+  );
+  return accountSystemResult(result, "资金账户变更失败");
+}
+
+async function updateSecurityHolding(accountNo, stockCode, stockName, quantity, price, orderRef, changeType) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  const result = await requestJson(
+    API_CONFIG.accountBaseUrl,
+    API_CONFIG.endpoints.securityHoldingChange,
+    {
+      method: "POST",
+      body: {
+        sec_acc_no: currentAccount()?.securityAccountNo || accountNo,
+        stock_code: stockCode,
+        stock_name: stockName || state.stocks[stockCode]?.name || stockCode,
+        ref_order_id: orderRef,
+        change_type: changeType,
+        quantity,
+        price,
+      },
+    },
+  );
+  return accountSystemResult(result, "证券持仓变更失败");
+}
+
 async function freezeFunds(accountNo, amount, orderRef) {
-  return { ok: true };
+  return updateFundBalance(accountNo, amount, orderRef, "买入冻结");
 }
 async function releaseFunds(accountNo, amount, orderRef) {
-  return { ok: true };
+  return updateFundBalance(accountNo, amount, orderRef, "撤单解冻");
 }
 async function freezeHolding(accountNo, stockCode, quantity, orderRef) {
-  return { ok: true };
+  return updateSecurityHolding(accountNo, stockCode, "", quantity, null, orderRef, "卖出冻结");
 }
 async function releaseHolding(accountNo, stockCode, quantity, orderRef) {
-  return { ok: true };
+  return updateSecurityHolding(accountNo, stockCode, "", quantity, null, orderRef, "撤单释放");
+}
+async function debitFunds(accountNo, amount, orderRef) {
+  return updateFundBalance(accountNo, amount, orderRef, "买入扣款");
+}
+async function creditFunds(accountNo, amount, orderRef) {
+  return updateFundBalance(accountNo, amount, orderRef, "卖出回款");
+}
+async function addHolding(accountNo, stockCode, stockName, quantity, price, orderRef) {
+  return updateSecurityHolding(accountNo, stockCode, stockName, quantity, price, orderRef, "买入增加");
+}
+async function deductHolding(accountNo, stockCode, stockName, quantity, price, orderRef) {
+  return updateSecurityHolding(accountNo, stockCode, stockName, quantity, price, orderRef, "卖出扣减");
 }

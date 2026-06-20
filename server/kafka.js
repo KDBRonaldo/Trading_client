@@ -292,8 +292,6 @@ function buildOrderCommand(order) {
     side: order.direction || order.side,
     price: Number(order.price),
     quantity: Number(order.quantity),
-    highLimit: Number(order.highLimit ?? order.limitUp ?? order.upperLimit ?? NaN),
-    lowLimit: Number(order.lowLimit ?? order.limitDown ?? order.lowerLimit ?? NaN),
     timestamp: order.timestamp || new Date().toISOString(),
   };
 
@@ -304,9 +302,6 @@ function buildOrderCommand(order) {
   assertPositiveNumber(value.price, "price must be greater than 0");
   assertPositiveInteger(value.quantity, "quantity must be a positive integer");
   assertIsoDate(value.timestamp, "timestamp must be an ISO 8601 string");
-  if (!Number.isFinite(value.highLimit)) delete value.highLimit;
-  if (!Number.isFinite(value.lowLimit)) delete value.lowLimit;
-
   return value;
 }
 
@@ -652,6 +647,10 @@ async function handleOrderReport(report) {
     report.status ||
     report.result;
   const rejectReason = report.reason || report.message || null;
+  const centralStatus =
+    status === "REJECTED"
+      ? "中央交易系统拒绝"
+      : `中央交易系统回报：${status}`;
 
   const terminalWithoutRemainder = ["CANCELED", "EXPIRED", "REJECTED"].includes(
     status,
@@ -659,12 +658,12 @@ async function handleOrderReport(report) {
   const [result] = await pool.execute(
     terminalWithoutRemainder
       ? `UPDATE order_record
-         SET order_status = ?, reject_reason = ?, remaining_quantity = 0, update_time = NOW()
+         SET order_status = ?, reject_reason = ?, central_status = ?, remaining_quantity = 0, update_time = NOW()
          WHERE order_no = ?`
       : `UPDATE order_record
-         SET order_status = ?, reject_reason = ?, update_time = NOW()
+         SET order_status = ?, reject_reason = ?, central_status = ?, update_time = NOW()
          WHERE order_no = ?`,
-    [status, rejectReason, orderNo],
+    [status, rejectReason, centralStatus, orderNo],
   );
 
   if (result.affectedRows === 0) {

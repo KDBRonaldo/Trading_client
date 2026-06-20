@@ -1,192 +1,91 @@
-# 股票交易系统 - 交易客户端原型
+# 交易客户端本地演示版
 
-这是根据需求报告和设计报告搭建的交易客户端前端原型。当前版本已经预留资金/证券账户系统、交易管理系统、中央交易系统的接口适配层；没有配置接口地址时使用 `localStorage` 演示数据，配置接口地址后对应操作会优先调用外部系统。
+这是交易客户端的本地演示版本，用于单独测试本模块功能。
 
-## 运行方式
+默认不连接：
 
-直接在浏览器中打开 `index.html`。
+- 中央交易系统
+- 交易管理系统
+- 资金账户系统
+- 证券账户系统
+- Kafka
+- MySQL 后端
+
+前端会使用本地 mock 数据和浏览器 localStorage。委托、成交、撤单都在本地完成。
+
+## 启动方式
+
+最简单方式：
+
+1. 直接用浏览器打开 `index.html`
+2. 登录演示账户
 
 演示账户：
 
-- 资金账户卡号：`6222026000000001`
-- 交易密码：`123456`
-- 取款密码：`654321`
+```text
+资金账号：6222026000000001
+交易密码：123456
+取款密码：654321
+```
 
-## 外部系统接口
+如果浏览器限制本地文件，可以在本目录启动静态服务：
 
-详细接口契约见 `INTERFACES.md`。交易管理系统审查接口以
-`MANAGEMENT_CONTRACT.md` 为准；中央交易系统 Kafka 消息以
-`KAFKA_CONTRACT.md` 为准。
+```powershell
+npx serve .
+```
 
-默认没有配置接口地址，因此会走本地 mock。若其他模块已经启动，在浏览器控制台执行：
+然后打开终端提示的本地地址。
+
+## 是否需要 npm run dev
+
+本地演示不需要 `npm run dev`。
+
+`npm run dev` 只是启动交易客户端自己的 Node 后端，用于数据库/Kafka 集成测试。本演示版默认关闭这些能力。
+
+## 功能验证顺序
+
+1. 登录：使用 `6222026000000001 / 123456`
+2. 账户资产：查看可用资金、冻结资金、持仓
+3. 行情查询：输入 `000001`、`600519` 或股票名称
+4. 买入委托：提交一笔买入，委托进入列表
+5. 卖出委托：提交一笔卖出，校验本地持仓
+6. 成交：在“委托与成交”页面点击“成交”，本地模拟成交
+7. 撤单：对未成交或部分成交委托点击“撤销”
+8. 价格提醒：新增提醒，刷新行情后检查触发
+9. 密码设置：修改交易密码或取款密码
+
+## 演示模式开关
+
+演示模式在 `js/config.js` 中固定开启：
 
 ```js
-localStorage.setItem("accountApiBase", "http://localhost:8080");
-localStorage.setItem("managementApiBase", "http://localhost:8081");
-localStorage.setItem("centralTradingApiBase", "http://localhost:8082");
-location.reload();
+const DEMO_MODE = true;
 ```
 
-若你们直接用 `file://` 打开页面并访问本地后端，后端需要允许跨域；更稳妥的方式是用静态服务器打开本目录。
-
-## 已覆盖功能
-
-- 登录校验：16位资金账户卡号、6位交易密码；配置接口地址后调用资金账户系统，未配置时使用本地 mock。
-- 账户查询：可用资金、冻结资金、总资产估算、证券持仓和持仓盈亏。
-- 行情查询：按6位代码或股票名称模糊查询，展示最新价、买卖盘口、最高最低价、涨跌停价和公告。
-- 买入委托：本地校验后请求交易管理系统审查，再冻结资金并提交中央交易系统；未配置接口时本地模拟。
-- 卖出委托：本地校验后请求交易管理系统审查，再冻结股票并提交中央交易系统；未配置接口时本地模拟。
-- 委托撤销：请求中央交易系统撤销，成功后释放冻结资金或股票；未配置接口时本地模拟。
-- 成交回报：配置中央交易系统后可查询成交回报，未配置接口时可手动模拟成交。
-- 价格提醒：新增、查看、删除提醒规则，刷新行情时自动检查触发条件。
-- 密码修改：支持交易密码和取款密码，校验原密码、新密码格式、重复密码和二次确认。
-- 会话控制：模拟30分钟无操作超时，超时后回到登录页。
-
-## 文件结构
+该模式会强制：
 
 ```text
-.
-├── index.html
-├── styles.css
-├── js/
-│   ├── config.js
-│   ├── mock-data.js
-│   ├── state.js
-│   ├── dom.js
-│   ├── api.js
-│   ├── account-api.js
-│   ├── management-api.js
-│   ├── central-api.js
-│   ├── render.js
-│   └── business.js
-├── app.js
-├── database/
-│   └── schema.sql
-├── INTERFACES.md
-├── DATABASE.md
-├── TEAM_WORK.md
-└── README.md
+accountBaseUrl = ""
+clientBaseUrl = ""
+managementBaseUrl = ""
+centralBaseUrl = ""
+centralKafkaEnabled = false
 ```
 
-## 分工建议
+因此即使浏览器 localStorage 里残留了外部系统地址，本演示版也不会连接外部模块。
 
-- `js/api.js`：通用 HTTP 请求工具，通常不用改。
-- `js/account-api.js`：资金账户/证券账户系统接口，账户对接同学主要改这里。
-- `js/management-api.js`：交易管理系统审查接口，交易对接同学改这里。
-- `js/central-api.js`：中央交易系统行情、委托、撤单、成交接口，交易对接同学改这里。
-- `js/business.js`：登录、买卖、撤单、成交同步、提醒、密码修改等业务流程。
-- `js/render.js`、`styles.css`：页面展示和样式。
-- `js/mock-data.js`：本地演示数据。
-- `database/schema.sql`：交易客户端本地 MySQL 建表脚本。
-- `app.js`：事件绑定和启动入口，尽量少改。
+## 恢复集成模式
 
-## 后续对接建议
-
-如果后续要接入 Java/Spring Boot 后端，优先对齐 `INTERFACES.md` 中的请求和返回格式。若账户组字段名不同，主要改 `js/account-api.js`；若中央交易组字段名不同，主要改 `js/central-api.js`。
-
-交易客户端需要维护本地数据库，具体说明见 `DATABASE.md`。浏览器前端不能直接连接 MySQL，正式实现时需要一个交易客户端后端服务来读写 `login_session`、`order_record`、`trade_record`、`price_alert`、`alert_notification` 等表。
-
-## Trading client backend
-
-The `server/` directory is the reserved backend for the trading client itself.
-It currently provides the login session persistence API:
-
-```text
-POST /api/client/sessions
-PATCH /api/client/sessions/{sessionId}
-GET /api/client/health
-GET /api/client/orders
-POST /api/client/orders
-PATCH /api/client/orders/{localOrderId}
-GET /api/client/trades
-POST /api/client/trades
-GET /api/client/alerts
-POST /api/client/alerts
-PATCH /api/client/alerts/{alertId}
-GET /api/client/notifications
-POST /api/client/notifications
-PATCH /api/client/notifications/{notificationId}
-```
-
-To use it:
-
-```bash
-cp .env.example .env
-npm install
-npm run dev
-```
-
-Create the MySQL tables first with `database/schema.sql`, then configure the frontend in the browser console:
+如果以后要把这个复制版重新用于集成测试，把 `js/config.js` 中：
 
 ```js
-localStorage.setItem("clientApiBase", "http://localhost:8090");
-location.reload();
+const DEMO_MODE = true;
 ```
 
-## Central trading Kafka pipeline
-
-The trading client backend now includes a Kafka adapter for the central trading
-system. The formal message contract is documented in `KAFKA_CONTRACT.md`.
-The browser does not connect to Kafka directly. The flow is:
-
-```text
-frontend -> trading client backend HTTP -> Kafka -> central trading system
-central trading system -> Kafka -> trading client backend -> local database
-```
-
-Install dependencies first:
-
-```bash
-npm install
-```
-
-Then configure `.env`:
-
-```env
-KAFKA_ENABLED=true
-KAFKA_BROKERS=localhost:9092
-KAFKA_CLIENT_ID=trading-client
-KAFKA_GROUP_ID=trading-client-group
-KAFKA_TOPIC_ORDER_COMMAND=central.order.command
-KAFKA_TOPIC_CANCEL_COMMAND=central.cancel.command
-KAFKA_TOPIC_STOCK_QUERY=central.stock.query
-KAFKA_TOPIC_STOCK_QUOTE=client.stock.quote
-KAFKA_TOPIC_TRADE_REPORT=client.trade.report
-KAFKA_TOPIC_ORDER_REPORT=client.order.report
-```
-
-Frontend configuration:
+改成：
 
 ```js
-localStorage.setItem("clientApiBase", "http://localhost:8090");
-localStorage.setItem("centralKafkaEnabled", "true");
-localStorage.removeItem("centralTradingApiBase");
-location.reload();
+const DEMO_MODE = false;
 ```
 
-Central trading Kafka message contract:
-
-```text
-inbound to central:
-- central.order.command: accountId, orderId, stockCode, side, price, quantity, timestamp
-- central.cancel.command: orderId, accountId, timestamp
-- central.stock.query: stockCode, queryId, timestamp
-
-outbound from central:
-- client.stock.quote: stockCode, stockName, latestPrice, previousClose, highestPrice,
-  lowestPrice, bidPrice, askPrice, tradeStatus, notice, quoteTime
-- client.trade.report: buyerOrderId and/or sellerOrderId, stockCode, tradeNo,
-  tradePrice, tradeQuantity, tradeTime
-- client.order.report: orderId, status, reason, timestamp
-```
-
-Required status values:
-
-```text
-SUBMITTED, ACCEPTED, PART_TRADED, TRADED, CANCELED, EXPIRED, REJECTED
-```
-
-`orderId` is generated by the trading client and must be echoed in all order
-reports. Trade reports should send `buyerOrderId` for buyer-side fills and
-`sellerOrderId` for seller-side fills. If central trading only has one relevant
-order for our client, sending `orderId` is also accepted.
+然后再按接口文档配置外部系统地址或 Kafka。

@@ -47,6 +47,13 @@ async function fetchQuotes(keyword = "") {
 }
 
 function normalizeStockQuote(item) {
+  const rawTradeStatus = item.status || item.tradeStatus || "可交易";
+  const tradeStatus =
+    rawTradeStatus === "TRADING"
+      ? "可交易"
+      : rawTradeStatus === "SUSPENDED"
+        ? "暂停交易"
+        : rawTradeStatus;
   return {
     stockCode: item.stockCode,
     name: item.name || item.stockName,
@@ -76,7 +83,7 @@ function normalizeStockQuote(item) {
     lowLimit: Number(
       item.lowLimit ?? item.limitDown ?? item.lowerLimit ?? NaN,
     ),
-    status: item.status || item.tradeStatus || "可交易",
+    status: tradeStatus,
     announcement: item.announcement || item.notice || "",
   };
 }

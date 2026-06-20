@@ -1,23 +1,31 @@
 const STORAGE_KEY = "stock-trading-client-state";
 const SESSION_LIMIT_MS = 30 * 60 * 1000;
+const DEMO_MODE = false;
+const MANAGEMENT_INTEGRATION_MODE = true;
+const MANAGEMENT_INTEGRATION_BASE_URL = "http://10.196.95.30:8081";
+const ACCOUNT_SYSTEM_BASE_URL = "http://10.196.67.23:8080";
+const ACCOUNT_SYSTEM_INTEGRATION_MODE = false;
+const CENTRAL_KAFKA_INTEGRATION_MODE = true;
 const storedCentralKafkaEnabled = localStorage.getItem("centralKafkaEnabled");
 
 const API_CONFIG = {
-  accountBaseUrl: localStorage.getItem("accountApiBase") || localStorage.getItem("fundAccountApiBase") || "",
-  clientBaseUrl: localStorage.getItem("clientApiBase") || "http://localhost:8090",
-  managementBaseUrl: localStorage.getItem("managementApiBase") || "",
-  centralBaseUrl: localStorage.getItem("centralTradingApiBase") || "",
-  centralKafkaEnabled: storedCentralKafkaEnabled === null ? true : storedCentralKafkaEnabled === "true",
+  demoMode: DEMO_MODE,
+  // 当前仅联调交易管理/中央交易；资金账户系统暂不调用。
+  accountBaseUrl: ACCOUNT_SYSTEM_INTEGRATION_MODE && !DEMO_MODE ? ACCOUNT_SYSTEM_BASE_URL : "",
+  // 本地会话服务仅在联调时显式配置，避免未启动 8090 服务阻塞演示账户登录。
+  clientBaseUrl: CENTRAL_KAFKA_INTEGRATION_MODE ? "http://localhost:8090" : MANAGEMENT_INTEGRATION_MODE ? "" : DEMO_MODE ? "" : localStorage.getItem("clientApiBase") || "",
+  managementBaseUrl: MANAGEMENT_INTEGRATION_MODE ? MANAGEMENT_INTEGRATION_BASE_URL : DEMO_MODE ? "" : localStorage.getItem("managementApiBase") || "",
+  centralBaseUrl: MANAGEMENT_INTEGRATION_MODE ? "" : DEMO_MODE ? "" : localStorage.getItem("centralTradingApiBase") || "",
+  centralKafkaEnabled: CENTRAL_KAFKA_INTEGRATION_MODE ? true : MANAGEMENT_INTEGRATION_MODE ? false : DEMO_MODE ? false : storedCentralKafkaEnabled === null ? true : storedCentralKafkaEnabled === "true",
   endpoints: {
     login: "/api/external/fund/login",
     fundAccount: "/api/external/fund/snapshot",
     holdings: "/api/external/security/snapshot",
     changePassword: "/api/external/fund/password",
-    freezeFunds: "/api/fund-accounts/{accountNo}/freeze",
-    releaseFunds: "/api/fund-accounts/{accountNo}/release",
-    freezeHolding: "/api/security-accounts/{accountNo}/holdings/freeze",
-    releaseHolding: "/api/security-accounts/{accountNo}/holdings/release",
+    fundBalanceChange: "/api/external/trade/fund-balance",
+    securityHoldingChange: "/api/external/trade/security-holding",
     reviewOrder: "/api/trade-management/orders/review",
+    reviewResult: "/api/trade-management/reviews/{reviewId}",
     quotes: "/api/central-trading/stocks",
     submitOrder: "/api/central-trading/orders",
     cancelOrder: "/api/central-trading/orders/{orderId}/cancel",

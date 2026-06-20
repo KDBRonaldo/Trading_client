@@ -21,6 +21,7 @@ async function reviewOrderByManagement(orderPayload) {
     ok: true,
     approved: payload.approved !== false,
     reviewId: payload.reviewId || orderPayload.reviewId,
+    reviewStatus: payload.reviewStatus || "",
     riskLevel: payload.riskLevel || "LOW",
     rejectCode: payload.rejectCode || "",
     message:
@@ -40,11 +41,32 @@ function buildManagementReviewRequest(orderPayload) {
     accountId: orderPayload.fundAccountNo,
     fundAccountNo: orderPayload.fundAccountNo,
     securityAccountNo: orderPayload.securityAccountNo,
+    userName: orderPayload.userName || "",
     stockCode: orderPayload.stockCode,
+    stockName: orderPayload.stockName || "",
     side: orderPayload.direction,
     price: Number(orderPayload.price),
     quantity: Number(orderPayload.quantity),
     amount: Number(orderPayload.price) * Number(orderPayload.quantity),
     clientTime: orderPayload.clientTime || new Date().toISOString(),
+  };
+}
+
+async function fetchManagementReviewResult(reviewId) {
+  const result = await requestJson(API_CONFIG.managementBaseUrl, API_CONFIG.endpoints.reviewResult, {
+    params: { reviewId },
+  });
+  if (!result.ok) return result;
+  const payload = result.data.data || result.data.review || result.data;
+  if (result.data.success === false || result.data.ok === false) {
+    return { ok: false, message: result.data.message || "查询人工审核结果失败" };
+  }
+  return {
+    ok: true,
+    approved: payload.approved === true,
+    reviewStatus: payload.reviewStatus || "",
+    riskLevel: payload.riskLevel || "",
+    rejectCode: payload.rejectCode || "",
+    message: payload.reason || payload.message || "",
   };
 }
