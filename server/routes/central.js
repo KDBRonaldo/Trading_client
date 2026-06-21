@@ -4,6 +4,7 @@ const {
   consumeTimedOutStockQuery,
   getCachedStockQuotes,
   getStockQuoteMiss,
+  hasPendingStockQuery,
   getKafkaStatus,
   publishCancelCommand,
   publishOrderCommand,
@@ -86,6 +87,7 @@ router.post("/stock-queries", async (req, res, next) => {
 router.get("/stocks", async (req, res, next) => {
   try {
     const keyword = String(req.query.keyword || "");
+    const forceRefresh = String(req.query.refresh || "").toLowerCase() === "true";
     const stocks = getCachedStockQuotes(keyword);
     const miss = getStockQuoteMiss(keyword);
     const timedOut = consumeTimedOutStockQuery(keyword);
@@ -108,14 +110,18 @@ router.get("/stocks", async (req, res, next) => {
         data: [],
       });
     }
-    if (/^\d{6}$/.test(keyword) && stocks.length === 0) {
+    if (/^\d{6}$/.test(keyword) && (forceRefresh || stocks.length === 0)) {
       await publishStockQuery(keyword);
     }
 
     res.json({
       ok: true,
-      pending: /^\d{6}$/.test(keyword) && stocks.length === 0,
-      message: stocks.length ? "Quote cache returned" : "Quote query sent. Please refresh after central trading publishes client.stock.quote.",
+      pending: hasPendingStockQuery(keyword),
+      message: hasPendingStockQuery(keyword)
+        ? "Quote query sent to central trading system. Cached data is shown until the Kafka response arrives."
+        : stocks.length
+          ? "Quote cache returned"
+          : "Quote query sent. Please refresh after central trading publishes client.stock.quote.",
       data: stocks,
     });
   } catch (error) {

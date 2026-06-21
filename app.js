@@ -9,6 +9,7 @@ dom.loginForm.addEventListener("submit", async (event) => {
   if (!result.ok) return setMessage(dom.loginMessage, result.message, "error");
   setMessage(dom.loginMessage, result.message, "ok");
   showTerminal();
+  await refreshExternalData();
   startClientBackgroundJobs();
 });
 
@@ -34,7 +35,9 @@ dom.marketForm.addEventListener("submit", async (event) => {
 });
 
 async function runMarketQuery(keyword, { autoConfirm = false } = {}) {
-  const result = await fetchQuotes(keyword);
+  // A user-initiated market search must always query the central trading system.
+  // The confirmation retry reads the response that arrives asynchronously via Kafka.
+  const result = await fetchQuotes(keyword, { forceRefresh: autoConfirm });
   if (!result.ok) {
     if (result.pending && autoConfirm && /^\d{6}$/.test(keyword)) {
       renderMarketNotice("正在向中央交易系统查询行情...", "pending");

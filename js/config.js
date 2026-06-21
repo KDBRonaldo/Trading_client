@@ -3,8 +3,9 @@ const SESSION_LIMIT_MS = 30 * 60 * 1000;
 const DEMO_MODE = false;
 const MANAGEMENT_INTEGRATION_MODE = true;
 const MANAGEMENT_INTEGRATION_BASE_URL = "http://10.196.95.30:8081";
-const ACCOUNT_SYSTEM_BASE_URL = "http://10.196.67.23:8080";
-const ACCOUNT_SYSTEM_INTEGRATION_MODE = false;
+const ACCOUNT_SYSTEM_BASE_URL = "http://localhost:8080";
+const ACCOUNT_SYSTEM_CERTIFICATE_CODE = "CERT-123456";
+const ACCOUNT_SYSTEM_INTEGRATION_MODE = true;
 const CENTRAL_KAFKA_INTEGRATION_MODE = true;
 const storedCentralKafkaEnabled = localStorage.getItem("centralKafkaEnabled");
 
@@ -19,6 +20,7 @@ const API_CONFIG = {
   centralKafkaEnabled: CENTRAL_KAFKA_INTEGRATION_MODE ? true : MANAGEMENT_INTEGRATION_MODE ? false : DEMO_MODE ? false : storedCentralKafkaEnabled === null ? true : storedCentralKafkaEnabled === "true",
   endpoints: {
     login: "/api/external/fund/login",
+    completeCertificate: "/api/external/fund/complete-certificate",
     fundAccount: "/api/external/fund/snapshot",
     holdings: "/api/external/security/snapshot",
     changePassword: "/api/external/fund/password",

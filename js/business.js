@@ -22,7 +22,7 @@ function validateSession() {
 }
 
 async function login(accountNo, password) {
-  if (!/^[A-Za-z0-9]{6,32}$/.test(accountNo)) return { ok: false, message: "账户号格式错误" };
+  if (!String(accountNo || "").trim()) return { ok: false, message: "请输入资金账号" };
   if (!password) return { ok: false, message: "请输入交易密码" };
   const authResult = await verifyFundAccount(accountNo, password);
   if (!authResult.ok) return authResult;
@@ -62,6 +62,7 @@ function ensureLocalAccount(remoteAccount) {
     ...fallback,
     name: remoteAccount.name,
     status: remoteAccount.status,
+    authToken: remoteAccount.authToken || fallback.authToken || "",
     securityAccountNo: remoteAccount.securityAccountNo || fallback.securityAccountNo || remoteAccount.accountNo,
     availableCash: remoteAccount.availableCash,
     frozenCash: remoteAccount.frozenCash,
@@ -87,6 +88,7 @@ async function bootSession() {
   if (state.session && Date.now() - state.session.lastActiveAt <= SESSION_LIMIT_MS) {
     state.currentAccount = state.session.accountNo;
     showTerminal();
+    await refreshExternalData();
     await restoreClientState({ silent: true });
     startClientBackgroundJobs();
   } else {

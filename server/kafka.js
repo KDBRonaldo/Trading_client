@@ -349,13 +349,11 @@ async function publishStockQuery(stockCode) {
       },
     ],
   });
-  if (!pendingStockQueries.has(value.stockCode)) {
-    pendingStockQueries.set(value.stockCode, {
-      stockCode: value.stockCode,
-      queryId: value.queryId,
-      sentAt: Date.now(),
-    });
-  }
+  pendingStockQueries.set(value.stockCode, {
+    stockCode: value.stockCode,
+    queryId: value.queryId,
+    sentAt: Date.now(),
+  });
   rememberProduced(TOPICS.stockQuery);
   return value;
 }
@@ -478,6 +476,11 @@ function getStockQuoteMiss(keyword = "") {
   const query = String(keyword || "").trim();
   if (!isStockCode(query)) return null;
   return stockQuoteMisses.get(query) || null;
+}
+
+function hasPendingStockQuery(keyword = "") {
+  const query = String(keyword || "").trim();
+  return isStockCode(query) && pendingStockQueries.has(query);
 }
 
 function consumeTimedOutStockQuery(keyword = "") {
@@ -853,5 +856,6 @@ module.exports = {
   publishStockQuery,
   getCachedStockQuotes,
   getStockQuoteMiss,
+  hasPendingStockQuery,
   consumeTimedOutStockQuery,
 };

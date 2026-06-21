@@ -5,8 +5,8 @@ const pool = require("../db");
 const router = express.Router();
 const SESSION_MINUTES = 30;
 
-function isAccountNo(value) {
-  return typeof value === "string" && /^\d{16}$/.test(value);
+function hasFundAccountNo(value) {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isSecurityAccountNo(value) {
@@ -19,8 +19,8 @@ router.post("/", async (req, res, next) => {
     const securityAccountNo = String(req.body.securityAccountNo || "");
     const sessionId = req.body.sessionId || crypto.randomUUID();
 
-    if (!isAccountNo(fundAccountNo)) {
-      return res.status(400).json({ ok: false, message: "Invalid fundAccountNo" });
+    if (!hasFundAccountNo(fundAccountNo)) {
+      return res.status(400).json({ ok: false, message: "fundAccountNo is required" });
     }
     if (!isSecurityAccountNo(securityAccountNo)) {
       return res.status(400).json({ ok: false, message: "Invalid securityAccountNo" });

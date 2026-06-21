@@ -1,8 +1,0 @@
-node_modules/
-target/
-.env
-
-.github
-.vscode
-
-/materials

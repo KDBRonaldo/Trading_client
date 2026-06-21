@@ -1,6 +1,9 @@
-async function fetchQuotes(keyword = "") {
+async function fetchQuotes(keyword = "", { forceRefresh = false } = {}) {
   if (!API_CONFIG.centralBaseUrl && API_CONFIG.clientBaseUrl && API_CONFIG.centralKafkaEnabled) {
-    const query = keyword ? `?keyword=${encodeURIComponent(keyword)}` : "";
+    const params = new URLSearchParams();
+    if (keyword) params.set("keyword", keyword);
+    if (forceRefresh) params.set("refresh", "true");
+    const query = params.size ? `?${params.toString()}` : "";
     const result = await requestJson(
       API_CONFIG.clientBaseUrl,
       `${API_CONFIG.endpoints.kafkaQuotes}${query}`,
@@ -13,17 +16,17 @@ async function fetchQuotes(keyword = "") {
         message: result.data.message || "股票不存在",
       };
     }
+    if (result.data.pending) {
+      return {
+        ok: false,
+        pending: true,
+        message: result.data.message || "Quote query sent. Waiting for central trading response.",
+      };
+    }
     const payload = result.data.data || result.data.stocks || result.data;
     const stocks = (Array.isArray(payload) ? payload : []).map(
       normalizeStockQuote,
     );
-    if (!stocks.length && result.data.pending) {
-      return {
-        ok: false,
-        pending: true,
-        message: "行情请求已发送，等待中央交易系统返回后再刷新",
-      };
-    }
     return { ok: true, stocks };
   }
 

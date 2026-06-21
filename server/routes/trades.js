@@ -6,8 +6,8 @@ const router = express.Router();
 router.get("/", async (req, res, next) => {
   try {
     const fundAccountNo = String(req.query.fundAccountNo || "");
-    if (!/^\d{16}$/.test(fundAccountNo)) {
-      return res.status(400).json({ ok: false, message: "Invalid fundAccountNo" });
+    if (!fundAccountNo.trim()) {
+      return res.status(400).json({ ok: false, message: "fundAccountNo is required" });
     }
 
     const [rows] = await pool.execute(

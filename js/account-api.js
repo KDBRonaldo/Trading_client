@@ -12,7 +12,27 @@ async function verifyFundAccount(accountNo, password) {
   );
   if (!result.ok)
     return { ok: false, message: result.message || "资金账户系统拒绝登录请求" };
-  return normalizeFundAccountLogin(result.data, accountNo);
+  let payload = result.data;
+  if (payload.requires_certificate === true) {
+    const certificateResult = await requestJson(
+      API_CONFIG.accountBaseUrl,
+      API_CONFIG.endpoints.completeCertificate,
+      {
+        method: "POST",
+        body: {
+          subject_type: payload.certificate_subject_type || "FUND",
+          subject_key: payload.certificate_subject_key || accountNo,
+          certificate_code: ACCOUNT_SYSTEM_CERTIFICATE_CODE,
+        },
+      },
+    );
+    if (!certificateResult.ok) {
+      return { ok: false, message: certificateResult.message || "资金账户证书认证失败" };
+    }
+    payload = certificateResult.data;
+  }
+
+  return normalizeFundAccountLogin(payload, accountNo);
 }
 
 function normalizeFundAccountLogin(data, accountNo) {
