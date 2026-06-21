@@ -87,6 +87,15 @@ function logout(message = "") {
 async function bootSession() {
   if (state.session && Date.now() - state.session.lastActiveAt <= SESSION_LIMIT_MS) {
     state.currentAccount = state.session.accountNo;
+    // The account system keeps auth tokens in memory. Validate a browser-
+    // restored token before treating the local session as authenticated.
+    if (API_CONFIG.accountBaseUrl) {
+      const authCheck = await fetchFundAccount(state.session.accountNo);
+      if (!authCheck.ok && isInvalidAccountAuth(authCheck.message)) {
+        logout("账户系统登录凭证已失效，请重新登录");
+        return;
+      }
+    }
     showTerminal();
     await refreshExternalData();
     await restoreClientState({ silent: true });
@@ -114,32 +123,39 @@ async function restoreClientState({ silent = false } = {}) {
       localOrderMetadata.set(order.id, order);
       if (order.assetRef) localOrderMetadata.set(order.assetRef, order);
     });
-    const remoteOrderIds = new Set(ordersResult.orders.map((order) => order.id));
     const mergedOrders = ordersResult.orders.map((remoteOrder) => {
       const localOrder = localOrderMetadata.get(remoteOrder.id);
       if (!localOrder) return remoteOrder;
       return {
         ...remoteOrder,
         assetRef: localOrder.assetRef || remoteOrder.assetRef,
-        reviewId: localOrder.reviewId,
-        userName: localOrder.userName,
-        reviewStatus: localOrder.reviewStatus,
-        reviewReason: localOrder.reviewReason,
-        centralStatus: localOrder.centralStatus,
+        reviewId: remoteOrder.reviewId || localOrder.reviewId,
+        userName: remoteOrder.userName || localOrder.userName,
+        reviewStatus: remoteOrder.reviewStatus || localOrder.reviewStatus,
+        reviewReason: remoteOrder.reviewReason || localOrder.reviewReason,
+        centralStatus: remoteOrder.centralStatus || localOrder.centralStatus,
       };
     });
-    const pendingLocalReviews = state.orders.filter(
-      (order) =>
-        order.reviewId &&
-        !remoteOrderIds.has(order.id) &&
-        ["正在审核", "人工审核中", "审核通过", "人工审核通过"].includes(order.reviewStatus),
-    );
-    state.orders = [...pendingLocalReviews, ...mergedOrders];
+    // The client API can temporarily lag behind the browser (for example,
+    // while an order is being persisted). A refresh must not discard those
+    // local records simply because they are absent from this snapshot.
+    state.orders = mergeRemoteSnapshot(mergedOrders, state.orders, "id");
   }
-  if (tradesResult.ok && !tradesResult.mock) state.trades = tradesResult.trades;
-  if (alertsResult.ok && !alertsResult.mock) state.alerts = alertsResult.alerts;
+  if (tradesResult.ok && !tradesResult.mock) {
+    state.trades = mergeRemoteSnapshot(tradesResult.trades, state.trades, "id");
+  }
+  if (alertsResult.ok && !alertsResult.mock) {
+    // Alerts that have been persisted may legitimately disappear after being
+    // disabled. Only retain local alerts that have not received an API ID yet.
+    state.alerts = mergeRemoteSnapshot(alertsResult.alerts, state.alerts, "id", (alert) => !alert.alertId);
+  }
   if (notificationsResult.ok && !notificationsResult.mock) {
-    state.notifications = notificationsResult.notifications;
+    state.notifications = mergeRemoteSnapshot(
+      notificationsResult.notifications,
+      state.notifications,
+      "id",
+      (notification) => !notification.notificationId,
+    );
   }
 
   const failures = [ordersResult, tradesResult, alertsResult, notificationsResult]
@@ -150,6 +166,14 @@ async function restoreClientState({ silent = false } = {}) {
 
   saveState();
   renderAll();
+}
+
+function mergeRemoteSnapshot(remoteItems, localItems, key, preserveLocal = () => true) {
+  const remoteKeys = new Set(remoteItems.map((item) => String(item[key])));
+  const localOnlyItems = localItems.filter(
+    (item) => !remoteKeys.has(String(item[key])) && preserveLocal(item),
+  );
+  return [...localOnlyItems, ...remoteItems];
 }
 
 function startClientBackgroundJobs() {
@@ -956,7 +980,14 @@ async function refreshClientNotifications({ silent = true } = {}) {
     if (!silent) toast(result.message || "通知刷新失败");
     return;
   }
-  if (!result.mock) state.notifications = result.notifications;
+  if (!result.mock) {
+    state.notifications = mergeRemoteSnapshot(
+      result.notifications,
+      state.notifications,
+      "id",
+      (notification) => !notification.notificationId,
+    );
+  }
   saveState();
   renderNotifications();
 }
@@ -998,9 +1029,21 @@ async function changePassword(form) {
   if (!oldPassword || !newPassword) return setMessage(message, "请输入原密码和新密码", "error");
   if (newPassword !== confirmPassword) return setMessage(message, "两次输入的密码不一致，请重新输入", "error");
   const result = await changePasswordViaAccountSystem(account.accountNo, type, oldPassword, newPassword);
-  if (!result.ok) return setMessage(message, result.message || "资金账户系统修改密码失败", "error");
+  if (!result.ok) {
+    if (isInvalidAccountAuth(result.message)) {
+      logout("账户系统登录凭证已失效，请重新登录后再修改密码");
+      return;
+    }
+    return setMessage(message, result.message || "资金账户系统修改密码失败", "error");
+  }
   account[key] = newPassword;
   saveState();
   form.reset();
   setMessage(message, "密码修改成功", "ok");
+}
+
+function isInvalidAccountAuth(message) {
+  return /auth[_ ]?token.*(?:无效|失效|invalid|expired)|(?:无效|失效).*(?:auth[_ ]?token|登录凭证)/i.test(
+    String(message || ""),
+  );
 }
