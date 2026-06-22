@@ -1,0 +1,38 @@
+# PDF documents in root
+需求分析报告_账户业务处理.pdf
+系统设计报告_账户交易子系统.pdf
+
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+sourcecode/target/
+logs/
+
+# frontend
+frontend/node_modules
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+
+# MACOS
+.DS_Store
+**/.DS_Store
+
+# local automation / temp
+scripts/run-full-regression.ps1
+scripts/mysql_clear_business_data.sql
