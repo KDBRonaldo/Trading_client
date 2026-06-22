@@ -1042,6 +1042,21 @@ async function changePassword(form) {
   setMessage(message, "密码修改成功", "ok");
 }
 
+async function changeFundCash(form, direction) {
+  if (!validateSession()) return;
+  const account = currentAccount();
+  const message = form.querySelector(".form-message");
+  const amount = Number(form.amount.value);
+  if (!Number.isFinite(amount) || amount <= 0) return setMessage(message, "请输入大于 0 的金额", "error");
+  const result = direction === "deposit"
+    ? await depositFunds(account.accountNo, amount)
+    : await withdrawFunds(account.accountNo, amount, form.withdrawPassword.value.trim());
+  if (!result.ok) return setMessage(message, result.message || `${direction === "deposit" ? "存款" : "取款"}失败`, "error");
+  await refreshExternalData();
+  form.reset();
+  setMessage(message, `${direction === "deposit" ? "存款" : "取款"}成功`, "ok");
+}
+
 function isInvalidAccountAuth(message) {
   return /auth[_ ]?token.*(?:无效|失效|invalid|expired)|(?:无效|失效).*(?:auth[_ ]?token|登录凭证)/i.test(
     String(message || ""),

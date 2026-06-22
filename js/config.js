@@ -24,6 +24,8 @@ const API_CONFIG = {
     fundAccount: "/api/external/fund/snapshot",
     holdings: "/api/external/security/snapshot",
     changePassword: "/api/external/fund/password",
+    deposit: "/api/external/fund/deposit",
+    withdraw: "/api/external/fund/withdraw",
     fundBalanceChange: "/api/external/trade/fund-balance",
     securityHoldingChange: "/api/external/trade/security-holding",
     reviewOrder: "/api/trade-management/orders/review",

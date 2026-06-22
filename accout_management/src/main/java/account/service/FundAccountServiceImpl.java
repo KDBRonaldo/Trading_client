@@ -9,6 +9,8 @@ import account.dto.AccountBindingResponse;
 import account.dto.AccountStatusResponse;
 import account.dto.ChangeFundPasswordRequest;
 import account.dto.ClientChangeFundPasswordRequest;
+import account.dto.ClientDepositRequest;
+import account.dto.ClientWithdrawRequest;
 import account.dto.ClientLoginAuthResponse;
 import account.dto.CloseFundAccountRequest;
 import account.dto.CompleteLoginCertificateRequest;
@@ -152,15 +154,17 @@ public class FundAccountServiceImpl implements FundAccountService {
                     LocalDateTime.now()
             ));
 
-            dao.operationLogDao().create(connection, new DomainModels.OperationLog(
-                    null,
-                    request.getStaffId(),
-                    "资金存款",
-                    "FUND",
-                    request.getFundAccNo(),
-                    "存款 " + request.getAmount(),
-                    LocalDateTime.now()
-            ));
+            if (request.getStaffId() != null) {
+                dao.operationLogDao().create(connection, new DomainModels.OperationLog(
+                        null,
+                        request.getStaffId(),
+                        "资金存款",
+                        "FUND",
+                        request.getFundAccNo(),
+                        "存款 " + request.getAmount(),
+                        LocalDateTime.now()
+                ));
+            }
 
             return FundBalanceChangeResponse.builder()
                     .availableBalance(newAvailable)
@@ -199,21 +203,42 @@ public class FundAccountServiceImpl implements FundAccountService {
                     LocalDateTime.now()
             ));
 
-            dao.operationLogDao().create(connection, new DomainModels.OperationLog(
-                    null,
-                    request.getStaffId(),
-                    "资金取款",
-                    "FUND",
-                    request.getFundAccNo(),
-                    "取款 " + request.getAmount(),
-                    LocalDateTime.now()
-            ));
+            if (request.getStaffId() != null) {
+                dao.operationLogDao().create(connection, new DomainModels.OperationLog(
+                        null,
+                        request.getStaffId(),
+                        "资金取款",
+                        "FUND",
+                        request.getFundAccNo(),
+                        "取款 " + request.getAmount(),
+                        LocalDateTime.now()
+                ));
+            }
 
             return FundBalanceChangeResponse.builder()
                     .availableBalance(newAvailable)
                     .logId(logId)
                     .build();
         });
+    }
+
+    @Override
+    public FundBalanceChangeResponse clientDeposit(ClientDepositRequest request) {
+        clientAuthTokenService.requireFundAccess(request.getAuthToken(), request.getFundAccNo());
+        DepositRequest deposit = new DepositRequest();
+        deposit.setFundAccNo(request.getFundAccNo());
+        deposit.setAmount(request.getAmount());
+        return deposit(deposit);
+    }
+
+    @Override
+    public FundBalanceChangeResponse clientWithdraw(ClientWithdrawRequest request) {
+        clientAuthTokenService.requireFundAccess(request.getAuthToken(), request.getFundAccNo());
+        WithdrawRequest withdraw = new WithdrawRequest();
+        withdraw.setFundAccNo(request.getFundAccNo());
+        withdraw.setAmount(request.getAmount());
+        withdraw.setWithdrawPassword(request.getWithdrawPassword());
+        return withdraw(withdraw);
     }
 
     @Override

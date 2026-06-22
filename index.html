@@ -57,7 +57,7 @@
           </div>
           <nav class="nav-list" aria-label="主导航">
             <button class="nav-item active" data-view="dashboard">
-              账户资产
+              我的账户
             </button>
             <button class="nav-item" data-view="market">行情查询</button>
             <button class="nav-item" data-view="trade">委托交易</button>
@@ -123,6 +123,30 @@
                 </table>
               </div>
             </div>
+            <div class="account-actions">
+              <form id="depositForm" class="panel password-form">
+                <div class="panel-header"><h3>存款</h3><span>资金将计入可用资金</span></div>
+                <label><span>存款金额</span><input name="amount" inputmode="decimal" placeholder="请输入金额" /></label>
+                <button class="primary-btn" type="submit">确认存款</button>
+                <p class="form-message"></p>
+              </form>
+              <form id="withdrawForm" class="panel password-form">
+                <div class="panel-header"><h3>取款</h3><span>需验证取款密码</span></div>
+                <label><span>取款金额</span><input name="amount" inputmode="decimal" placeholder="请输入金额" /></label>
+                <label><span>取款密码</span><input name="withdrawPassword" type="password" placeholder="请输入取款密码" /></label>
+                <button class="primary-btn" type="submit">确认取款</button>
+                <p class="form-message"></p>
+              </form>
+              <form id="accountPasswordForm" class="panel password-form">
+                <div class="panel-header"><h3>修改密码</h3><span>交易密码或取款密码</span></div>
+                <label><span>密码类型</span><select name="type"><option value="trade">交易密码</option><option value="withdraw">取款密码</option></select></label>
+                <label><span>原密码</span><input name="oldPassword" type="password" /></label>
+                <label><span>新密码</span><input name="newPassword" type="password" /></label>
+                <label><span>确认新密码</span><input name="confirmPassword" type="password" /></label>
+                <button class="primary-btn" type="submit">保存修改</button>
+                <p class="form-message"></p>
+              </form>
+            </div>
           </section>
 
           <section id="market" class="view">
@@ -131,6 +155,30 @@
                 <h3>行情查询</h3>
                 <span>支持股票代码或名称模糊查询</span>
               </div>
+              <section class="market-list-section" aria-labelledby="marketListTitle">
+                <div class="panel-header">
+                  <h4 id="marketListTitle">股票行情</h4>
+                  <span id="marketListSummary"></span>
+                </div>
+                <div class="table-wrap market-list-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>代码</th>
+                        <th>名称</th>
+                        <th>最新价</th>
+                        <th>涨跌幅</th>
+                        <th>买一 / 卖一</th>
+                        <th>最高 / 最低</th>
+                        <th>涨停 / 跌停</th>
+                        <th>交易状态</th>
+                        <th>公告</th>
+                      </tr>
+                    </thead>
+                    <tbody id="marketListRows"></tbody>
+                  </table>
+                </div>
+              </section>
               <form id="marketForm" class="inline-form">
                 <input
                   id="marketKeyword"

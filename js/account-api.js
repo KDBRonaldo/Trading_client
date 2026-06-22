@@ -203,6 +203,22 @@ async function updateFundBalance(accountNo, amount, orderRef, txnType) {
   return accountSystemResult(result, "资金账户变更失败");
 }
 
+async function depositFunds(accountNo, amount) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  const result = await requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.deposit, {
+    method: "POST", body: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken, amount },
+  });
+  return accountSystemResult(result, "存款失败");
+}
+
+async function withdrawFunds(accountNo, amount, withdrawPassword) {
+  if (!API_CONFIG.accountBaseUrl) return { ok: true };
+  const result = await requestJson(API_CONFIG.accountBaseUrl, API_CONFIG.endpoints.withdraw, {
+    method: "POST", body: { fund_acc_no: accountNo, auth_token: currentAccount()?.authToken, amount, withdraw_password: withdrawPassword },
+  });
+  return accountSystemResult(result, "取款失败");
+}
+
 async function updateSecurityHolding(accountNo, stockCode, stockName, quantity, price, orderRef, changeType) {
   if (!API_CONFIG.accountBaseUrl) return { ok: true };
   const result = await requestJson(

@@ -3,6 +3,8 @@ package account.controller.external;
 import account.common.Result;
 import account.common.ResultPayloadMapper;
 import account.dto.ClientChangeFundPasswordRequest;
+import account.dto.ClientDepositRequest;
+import account.dto.ClientWithdrawRequest;
 import account.dto.ClientLoginAuthRequest;
 import account.dto.CompleteLoginCertificateRequest;
 import account.service.api.FundAccountService;
@@ -60,5 +62,15 @@ public class ExternalFundController {
                 request.getFundAccNo(), request.getPasswordType());
         fundAccountService.clientChangeFundPassword(request);
         return Result.success("密码修改成功");
+    }
+
+    @PostMapping("/deposit")
+    public Result<Void> clientDeposit(@Valid @RequestBody ClientDepositRequest request) {
+        return ResultPayloadMapper.flatten(objectMapper, fundAccountService.clientDeposit(request), "存款成功");
+    }
+
+    @PostMapping("/withdraw")
+    public Result<Void> clientWithdraw(@Valid @RequestBody ClientWithdrawRequest request) {
+        return ResultPayloadMapper.flatten(objectMapper, fundAccountService.clientWithdraw(request), "取款成功");
     }
 }

@@ -102,6 +102,10 @@ dom.passwordForm.addEventListener("submit", async (event) => {
   await changePassword(dom.passwordForm);
 });
 
+dom.depositForm.addEventListener("submit", async (event) => { event.preventDefault(); await changeFundCash(dom.depositForm, "deposit"); });
+dom.withdrawForm.addEventListener("submit", async (event) => { event.preventDefault(); await changeFundCash(dom.withdrawForm, "withdraw"); });
+dom.accountPasswordForm.addEventListener("submit", async (event) => { event.preventDefault(); await changePassword(dom.accountPasswordForm); });
+
 setInterval(() => {
   dom.clockText.textContent = nowText();
 }, 1000);

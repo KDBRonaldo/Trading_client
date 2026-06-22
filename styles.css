@@ -460,6 +460,28 @@ th {
   gap: 14px;
 }
 
+.account-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+
+.market-list-section {
+  margin-bottom: 16px;
+}
+
+.market-list-section h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.market-list-wrap {
+  max-height: 360px;
+}
+
+.market-list-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+}
+
 .market-notice {
   min-height: 120px;
   display: flex;

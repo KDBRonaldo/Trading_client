@@ -8,6 +8,7 @@ function showTerminal() {
 function renderAll() {
   renderAccount();
   renderHoldings();
+  renderMarketList();
   renderOrders();
   renderTrades();
   renderAlerts();
@@ -15,6 +16,38 @@ function renderAll() {
   dom.clockText.textContent = nowText();
   const account = currentAccount();
   dom.sessionAccount.textContent = account ? `${account.name} ${account.accountNo}` : "未登录";
+}
+
+function renderMarketList() {
+  const stocks = Object.values(state.stocks).sort((left, right) =>
+    String(left.stockCode).localeCompare(String(right.stockCode)),
+  );
+  dom.marketListRows.innerHTML = "";
+  dom.marketListSummary.textContent = `共 ${stocks.length} 只股票`;
+
+  if (!stocks.length) {
+    dom.marketListRows.innerHTML = `<tr><td colspan="9" class="hint">暂无已缓存行情。请先查询股票或刷新数据。</td></tr>`;
+    return;
+  }
+
+  stocks.forEach((stock) => {
+    const change = Number(stock.latest) - Number(stock.prevClose);
+    const changeRate = stock.prevClose ? (change / stock.prevClose) * 100 : 0;
+    const limits = getLimits(stock);
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${stock.stockCode}</td>
+      <td>${stock.name}</td>
+      <td>${money(stock.latest)}</td>
+      <td class="${change >= 0 ? "gain" : "loss"}">${changeRate.toFixed(2)}%</td>
+      <td>${price(stock.buyOne)} / ${price(stock.sellOne)}</td>
+      <td>${price(stock.high)} / ${price(stock.low)}</td>
+      <td>${price(limits.upper)} / ${price(limits.lower)}</td>
+      <td>${stock.status}</td>
+      <td>${stock.announcement || "-"}</td>
+    `;
+    dom.marketListRows.appendChild(row);
+  });
 }
 
 function renderAccount() {
