@@ -76,7 +76,6 @@
             </div>
             <div class="top-actions">
               <span id="clockText"></span>
-              <button id="refreshBtn" class="secondary-btn">刷新数据</button>
             </div>
           </header>
 
@@ -125,24 +124,64 @@
             </div>
             <div class="account-actions">
               <form id="depositForm" class="panel password-form">
-                <div class="panel-header"><h3>存款</h3><span>资金将计入可用资金</span></div>
-                <label><span>存款金额</span><input name="amount" inputmode="decimal" placeholder="请输入金额" /></label>
+                <div class="panel-header">
+                  <h3>存款</h3>
+                  <span>资金将计入可用资金</span>
+                </div>
+                <label
+                  ><span>存款金额</span
+                  ><input
+                    name="amount"
+                    inputmode="decimal"
+                    placeholder="请输入金额"
+                /></label>
                 <button class="primary-btn" type="submit">确认存款</button>
                 <p class="form-message"></p>
               </form>
               <form id="withdrawForm" class="panel password-form">
-                <div class="panel-header"><h3>取款</h3><span>需验证取款密码</span></div>
-                <label><span>取款金额</span><input name="amount" inputmode="decimal" placeholder="请输入金额" /></label>
-                <label><span>取款密码</span><input name="withdrawPassword" type="password" placeholder="请输入取款密码" /></label>
+                <div class="panel-header">
+                  <h3>取款</h3>
+                  <span>需验证取款密码</span>
+                </div>
+                <label
+                  ><span>取款金额</span
+                  ><input
+                    name="amount"
+                    inputmode="decimal"
+                    placeholder="请输入金额"
+                /></label>
+                <label
+                  ><span>取款密码</span
+                  ><input
+                    name="withdrawPassword"
+                    type="password"
+                    placeholder="请输入取款密码"
+                /></label>
                 <button class="primary-btn" type="submit">确认取款</button>
                 <p class="form-message"></p>
               </form>
               <form id="accountPasswordForm" class="panel password-form">
-                <div class="panel-header"><h3>修改密码</h3><span>交易密码或取款密码</span></div>
-                <label><span>密码类型</span><select name="type"><option value="trade">交易密码</option><option value="withdraw">取款密码</option></select></label>
-                <label><span>原密码</span><input name="oldPassword" type="password" /></label>
-                <label><span>新密码</span><input name="newPassword" type="password" /></label>
-                <label><span>确认新密码</span><input name="confirmPassword" type="password" /></label>
+                <div class="panel-header">
+                  <h3>修改密码</h3>
+                  <span>交易密码或取款密码</span>
+                </div>
+                <label
+                  ><span>密码类型</span
+                  ><select name="type">
+                    <option value="trade">交易密码</option>
+                    <option value="withdraw">取款密码</option>
+                  </select></label
+                >
+                <label
+                  ><span>原密码</span><input name="oldPassword" type="password"
+                /></label>
+                <label
+                  ><span>新密码</span><input name="newPassword" type="password"
+                /></label>
+                <label
+                  ><span>确认新密码</span
+                  ><input name="confirmPassword" type="password"
+                /></label>
                 <button class="primary-btn" type="submit">保存修改</button>
                 <p class="form-message"></p>
               </form>
@@ -155,7 +194,10 @@
                 <h3>行情查询</h3>
                 <span>支持股票代码或名称模糊查询</span>
               </div>
-              <section class="market-list-section" aria-labelledby="marketListTitle">
+              <section
+                class="market-list-section"
+                aria-labelledby="marketListTitle"
+              >
                 <div class="panel-header">
                   <h4 id="marketListTitle">股票行情</h4>
                   <span id="marketListSummary"></span>
@@ -259,8 +301,8 @@
           <section id="orders" class="view">
             <div class="panel">
               <div class="panel-header">
-                <h3>当日委托</h3>
-                <span>未成交或部分成交可撤销</span>
+                <h3>历史委托</h3>
+                <span>当前账户的全部委托记录</span>
               </div>
               <div class="table-wrap">
                 <table>

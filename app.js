@@ -17,14 +17,6 @@ dom.logoutBtn.addEventListener("click", () => logout());
 
 dom.navItems.forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
 
-dom.refreshBtn.addEventListener("click", async () => {
-  if (!validateSession()) return;
-  await refreshExternalData({ randomizeMockQuotes: true });
-  await restoreClientState({ silent: true });
-  await syncOpenOrders({ silent: true });
-  toast("行情与账户数据已刷新");
-});
-
 let marketQueryTimer = null;
 
 dom.marketForm.addEventListener("submit", async (event) => {

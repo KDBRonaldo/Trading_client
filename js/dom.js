@@ -11,7 +11,6 @@ const dom = {
   views: document.querySelectorAll(".view"),
   viewTitle: document.querySelector("#viewTitle"),
   clockText: document.querySelector("#clockText"),
-  refreshBtn: document.querySelector("#refreshBtn"),
   toast: document.querySelector("#toast"),
   availableCash: document.querySelector("#availableCash"),
   frozenCash: document.querySelector("#frozenCash"),

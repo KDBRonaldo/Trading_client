@@ -118,31 +118,10 @@ async function restoreClientState({ silent = false } = {}) {
     ]);
 
   if (ordersResult.ok && !ordersResult.mock) {
-    const localOrderMetadata = new Map();
-    state.orders.forEach((order) => {
-      localOrderMetadata.set(order.id, order);
-      if (order.assetRef) localOrderMetadata.set(order.assetRef, order);
-    });
-    const mergedOrders = ordersResult.orders.map((remoteOrder) => {
-      const localOrder = localOrderMetadata.get(remoteOrder.id);
-      if (!localOrder) return remoteOrder;
-      return {
-        ...remoteOrder,
-        assetRef: localOrder.assetRef || remoteOrder.assetRef,
-        reviewId: remoteOrder.reviewId || localOrder.reviewId,
-        userName: remoteOrder.userName || localOrder.userName,
-        reviewStatus: remoteOrder.reviewStatus || localOrder.reviewStatus,
-        reviewReason: remoteOrder.reviewReason || localOrder.reviewReason,
-        centralStatus: remoteOrder.centralStatus || localOrder.centralStatus,
-      };
-    });
-    // The client API can temporarily lag behind the browser (for example,
-    // while an order is being persisted). A refresh must not discard those
-    // local records simply because they are absent from this snapshot.
-    state.orders = mergeRemoteSnapshot(mergedOrders, state.orders, "id");
+    state.orders = ordersResult.orders;
   }
   if (tradesResult.ok && !tradesResult.mock) {
-    state.trades = mergeRemoteSnapshot(tradesResult.trades, state.trades, "id");
+    state.trades = tradesResult.trades;
   }
   if (alertsResult.ok && !alertsResult.mock) {
     // Alerts that have been persisted may legitimately disappear after being
